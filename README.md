@@ -13,9 +13,9 @@ See [PLAN.md](PLAN.md) for the architecture and roadmap and
 
 ## Status
 
-Milestone 1: live passthrough. The engine routes a microphone to any output
-device with level meters, latency and dropout readouts. The signal chain is not
-wired yet.
+Milestone 2: the signal chain exists as a tested, pure-Rust library with
+built-in presets and an offline renderer. The live engine still passes audio
+through untouched; wiring the chain into it is milestone 3.
 
 ## Requirements
 

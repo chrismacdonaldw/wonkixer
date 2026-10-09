@@ -39,12 +39,36 @@ few seconds and asserts there were no dropouts. It is skipped unless opted in:
 $env:WONKIXER_AUDIO_TESTS = "1"; cargo test -p wonkixer passes_audio
 ```
 
+## Working on the sound
+
+Render a recording through the chain without running the app:
+
+```powershell
+cargo run -p wonkixer-dsp --release --example offline -- input.wav output.wav
+cargo run -p wonkixer-dsp --release --example offline -- input.wav output.wav "Broadcast"
+```
+
+The input can be any mono or stereo WAV; the output is mono 32-bit float at the
+same rate and the command prints the peak gain reduction of each dynamics
+stage. Record the raw microphone with Audacity (or any recorder) to get a
+sample to iterate on, and keep such recordings under the git-ignored
+`docs/samples/`.
+
+Print the parameter schema the frontend is generated from:
+
+```powershell
+cargo run -p wonkixer-dsp --example dump_schema
+```
+
 ## Layout
 
 - `src/`: TypeScript frontend. `main.ts` only bootstraps; each module owns one
   concern and takes its dependencies as arguments so tests can pass fakes.
 - `crates/dsp/`: the signal chain as a pure library with no Tauri dependency.
-  Most DSP iteration happens here with `cargo test -p wonkixer-dsp`.
+  Most DSP iteration happens here with `cargo test -p wonkixer-dsp`. The
+  parameter table in `params.rs` is the single source of truth for stages,
+  parameters, ranges and defaults; everything else (presets, the chain, the
+  frontend schema) derives from it.
 - `src-tauri/`: the Tauri shell, audio engine thread and commands. The engine
   thread owns the audio streams; commands reach it over a channel and it
   publishes `engine:state` and `engine:meters` events back to the window.
