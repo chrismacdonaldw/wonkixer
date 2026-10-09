@@ -78,6 +78,10 @@ impl<S: Stage> Bypassable<S> {
         &self.stage
     }
 
+    pub fn inner_mut(&mut self) -> &mut S {
+        &mut self.stage
+    }
+
     pub fn reset(&mut self) {
         self.stage.reset();
     }

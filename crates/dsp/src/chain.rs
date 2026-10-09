@@ -155,6 +155,10 @@ impl Chain {
         report
     }
 
+    pub fn warm_up(&mut self) {
+        self.noise.inner_mut().warm_up();
+    }
+
     pub fn latency_samples(&self) -> usize {
         let noise = if self.noise.is_bypassed() {
             0

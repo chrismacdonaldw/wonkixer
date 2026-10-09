@@ -167,18 +167,21 @@ fn noise_suppression_adds_a_frame_of_latency_only_while_in_the_chain() {
     let mut chain = Chain::new(RATE);
     assert_eq!(chain.latency_samples(), 240);
 
+    let mut tone = sine(300.0, 2.0, 0.3);
+    let (before, after) = tone.split_at_mut(RATE as usize);
+    run(&mut chain, before);
+
     let mut values = ParamValues::default();
     values.set_bypassed(StageId::NoiseSuppressor, false);
     chain.apply(&values);
     assert_eq!(chain.latency_samples(), 720);
+    run(&mut chain, after);
 
-    let mut tone = sine(300.0, 1.0, 0.3);
-    run(&mut chain, &mut tone);
-    assert!(tone.iter().all(|sample| sample.is_finite()));
+    assert!(after.iter().all(|sample| sample.is_finite()));
     assert!(
-        largest_step(&tone) < 0.1,
+        largest_step(after) < 0.1,
         "stepped by {}",
-        largest_step(&tone)
+        largest_step(after)
     );
 }
 

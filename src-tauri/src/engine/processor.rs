@@ -26,6 +26,10 @@ impl Processor {
         self.chain.latency_samples()
     }
 
+    pub fn warm_up(&mut self) {
+        self.chain.warm_up();
+    }
+
     pub fn process(&mut self, block: &mut [f32]) -> BlockReport {
         if self
             .params

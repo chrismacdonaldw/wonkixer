@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use assert_no_alloc::assert_no_alloc;
+use assert_no_alloc::{assert_no_alloc, permit_alloc};
 use cpal::traits::{DeviceTrait, StreamTrait};
 use ringbuf::HeapProd;
 use ringbuf::traits::Producer;
@@ -152,8 +152,13 @@ fn output_callback(
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     let channels = usize::from(channels);
     let mut mono = vec![0.0f32; sample_rate as usize];
+    let mut warmed_up = false;
     move |data, _| {
         assert_no_alloc(|| {
+            if !warmed_up {
+                permit_alloc(|| processor.warm_up());
+                warmed_up = true;
+            }
             let frames = (data.len() / channels).min(mono.len());
             let fill = outlet.fill();
             let block = &mut mono[..frames];

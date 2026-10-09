@@ -6,6 +6,8 @@ use crate::params::ParamValues;
 pub const FRAME: usize = DenoiseState::FRAME_SIZE;
 pub const NATIVE_SAMPLE_RATE: f32 = 48_000.0;
 const PCM_SCALE: f32 = 32_768.0;
+const WARM_UP_LEVEL: f32 = 1_000.0;
+const WARM_UP_FRAMES: usize = 3;
 
 pub struct NoiseSuppressor {
     state: Box<DenoiseState<'static>>,
@@ -28,8 +30,14 @@ impl NoiseSuppressor {
         stage
     }
 
-    fn warm_up(&mut self) {
-        self.state.process_frame(&mut self.output, &self.input);
+    pub fn warm_up(&mut self) {
+        for (index, sample) in self.input.iter_mut().enumerate() {
+            *sample = WARM_UP_LEVEL * ((index % 7) as f32 - 3.0);
+        }
+        for _ in 0..WARM_UP_FRAMES {
+            self.state.process_frame(&mut self.output, &self.input);
+        }
+        self.input.fill(0.0);
         self.output.fill(0.0);
     }
 
