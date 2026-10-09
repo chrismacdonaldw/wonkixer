@@ -1,0 +1,10 @@
+[package]
+name = "wonkixer-dsp"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[lib]
+name = "wonkixer_dsp"
+
+[dependencies]
