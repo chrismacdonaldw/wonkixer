@@ -26,12 +26,53 @@ export interface EngineState {
   error: string | null;
 }
 
+export interface GainReductionFrame {
+  expander: number;
+  deesser: number;
+  compressor: number;
+  limiter: number;
+}
+
 export interface MeterFrame {
   inputPeakDb: number;
   outputPeakDb: number;
   clipped: boolean;
   latencyMs: number;
   dropouts: number;
+  gainReduction: GainReductionFrame;
+}
+
+export type Unit = "decibels" | "hertz" | "milliseconds" | "ratio" | "q" | "switch";
+export type Scale = "linear" | "logarithmic";
+
+export interface StageSpec {
+  id: string;
+  key: string;
+  label: string;
+  bypassable: boolean;
+}
+
+export interface ParamSpec {
+  id: string;
+  stage: string;
+  key: string;
+  label: string;
+  unit: Unit;
+  scale: Scale;
+  min: number;
+  max: number;
+  default: number;
+  step: number;
+}
+
+export interface ChainSchema {
+  stages: StageSpec[];
+  params: ParamSpec[];
+}
+
+export interface ParamValues {
+  values: Record<string, number>;
+  bypassed: string[];
 }
 
 export interface EngineApi {
@@ -39,6 +80,11 @@ export interface EngineApi {
   start(inputId: string, outputId: string): Promise<EngineState>;
   stop(): Promise<EngineState>;
   state(): Promise<EngineState>;
+  schema(): Promise<ChainSchema>;
+  params(): Promise<ParamValues>;
+  setParam(id: string, value: number): Promise<void>;
+  setBypass(stage: string, bypassed: boolean): Promise<void>;
+  replaceParams(values: ParamValues): Promise<ParamValues>;
   onState(handler: (state: EngineState) => void): Promise<Unsubscribe>;
   onMeters(handler: (frame: MeterFrame) => void): Promise<Unsubscribe>;
 }
@@ -51,6 +97,11 @@ export function createEngineApi(call: Call, subscribe: Subscribe): EngineApi {
     start: (inputId, outputId) => call<EngineState>("start_engine", { inputId, outputId }),
     stop: () => call<EngineState>("stop_engine"),
     state: () => call<EngineState>("get_engine_state"),
+    schema: () => call<ChainSchema>("get_schema"),
+    params: () => call<ParamValues>("get_params"),
+    setParam: (id, value) => call<void>("set_param", { id, value }),
+    setBypass: (stage, bypassed) => call<void>("set_bypass", { stage, bypassed }),
+    replaceParams: (values) => call<ParamValues>("set_params", { values }),
     onState: (handler) => subscribe<EngineState>("engine:state", handler),
     onMeters: (handler) => subscribe<MeterFrame>("engine:meters", handler),
   };

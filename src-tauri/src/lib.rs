@@ -18,6 +18,11 @@ pub fn run() {
             commands::start_engine,
             commands::stop_engine,
             commands::get_engine_state,
+            commands::get_schema,
+            commands::get_params,
+            commands::set_param,
+            commands::set_bypass,
+            commands::set_params,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build wonkixer")

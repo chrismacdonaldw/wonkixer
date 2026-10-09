@@ -1,15 +1,17 @@
 pub mod devices;
 mod meters;
+mod processor;
 mod streams;
 mod transport;
 mod worker;
 
-use std::sync::Mutex;
 use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use tauri::AppHandle;
 use tokio::sync::oneshot;
+use wonkixer_dsp::{ParamValues, Params};
 
 use worker::Command;
 pub use worker::EngineState;
@@ -18,6 +20,7 @@ const ENGINE_UNAVAILABLE: &str = "The audio engine is not running.";
 
 pub struct Engine {
     commands: Sender<Command>,
+    params: Arc<Params>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -25,14 +28,21 @@ impl Engine {
     pub fn spawn(app: AppHandle) -> Self {
         let (commands, inbox) = mpsc::channel();
         let failures = commands.clone();
+        let params = Arc::new(Params::new(&ParamValues::default()));
+        let shared = Arc::clone(&params);
         let worker = thread::Builder::new()
             .name("audio-engine".to_owned())
-            .spawn(move || worker::run(app, failures, inbox))
+            .spawn(move || worker::run(app, failures, inbox, shared))
             .expect("failed to spawn the audio engine thread");
         Self {
             commands,
+            params,
             worker: Mutex::new(Some(worker)),
         }
+    }
+
+    pub fn params(&self) -> &Params {
+        &self.params
     }
 
     pub async fn start(&self, input_id: String, output_id: String) -> Result<EngineState, String> {

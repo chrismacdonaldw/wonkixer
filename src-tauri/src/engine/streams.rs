@@ -4,8 +4,10 @@ use assert_no_alloc::assert_no_alloc;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use ringbuf::HeapProd;
 use ringbuf::traits::Producer;
+use wonkixer_dsp::Params;
 
 use super::meters::MeterStore;
+use super::processor::Processor;
 use super::transport::{self, Outlet, Pull};
 
 pub struct Streams {
@@ -17,6 +19,7 @@ pub fn open(
     input: &cpal::Device,
     output: &cpal::Device,
     meters: Arc<MeterStore>,
+    params: Arc<Params>,
     on_failure: impl Fn(String) + Clone + Send + 'static,
 ) -> Result<(Streams, u32), String> {
     let input_config = negotiated(input.default_input_config(), "input")?;
@@ -30,6 +33,8 @@ pub fn open(
     }
     let sample_rate = input_config.sample_rate();
     let (producer, consumer) = transport::ring(sample_rate);
+    let processor = Processor::new(params, sample_rate);
+    meters.set_processing_latency(processor.latency_samples());
 
     let input_stream = input
         .build_input_stream(
@@ -44,6 +49,7 @@ pub fn open(
             output_config.config(),
             output_callback(
                 Outlet::new(consumer, sample_rate),
+                processor,
                 output_config.channels(),
                 sample_rate,
                 Arc::clone(&meters),
@@ -139,6 +145,7 @@ fn input_callback(
 
 fn output_callback(
     mut outlet: Outlet,
+    mut processor: Processor,
     channels: u16,
     sample_rate: u32,
     meters: Arc<MeterStore>,
@@ -153,6 +160,7 @@ fn output_callback(
             if outlet.pull(block) == Pull::Underrun {
                 meters.record_dropout();
             }
+            meters.record_reduction(processor.process(block));
             let mut peak = 0.0f32;
             for (frame, &sample) in data.chunks_exact_mut(channels).zip(block.iter()) {
                 peak = peak.max(sample.abs());
@@ -169,6 +177,7 @@ mod tests {
     use std::time::Duration;
 
     use cpal::traits::HostTrait;
+    use wonkixer_dsp::ParamValues;
 
     use super::*;
 
@@ -217,10 +226,12 @@ mod tests {
             .or_else(|| host.default_output_device())
             .expect("an output device");
         let meters = Arc::new(MeterStore::default());
+        let params = Arc::new(Params::new(&ParamValues::default()));
         let (failures, on_failure) = failure_log();
 
         let (_streams, sample_rate) =
-            open(&input, &output, Arc::clone(&meters), on_failure).expect("streams to open");
+            open(&input, &output, Arc::clone(&meters), params, on_failure)
+                .expect("streams to open");
         std::thread::sleep(Duration::from_secs(3));
         let frame = meters.snapshot(sample_rate);
 

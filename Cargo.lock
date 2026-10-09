@@ -4358,6 +4358,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tokio",
+ "wonkixer-dsp",
 ]
 
 [[package]]

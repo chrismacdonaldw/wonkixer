@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
+use wonkixer_dsp::Params;
 
 use super::devices;
 use super::meters::MeterStore;
@@ -53,8 +54,13 @@ pub struct Endpoint {
     pub name: String,
 }
 
-pub fn run(app: AppHandle, failures: Sender<Command>, inbox: Receiver<Command>) {
-    let mut worker = Worker::new(app, failures);
+pub fn run(
+    app: AppHandle,
+    failures: Sender<Command>,
+    inbox: Receiver<Command>,
+    params: Arc<Params>,
+) {
+    let mut worker = Worker::new(app, failures, params);
     loop {
         match inbox.recv_timeout(METER_INTERVAL) {
             Ok(Command::Start {
@@ -93,18 +99,20 @@ struct Worker {
     failures: Sender<Command>,
     host: cpal::Host,
     meters: Arc<MeterStore>,
+    params: Arc<Params>,
     live: Option<Live>,
     state: EngineState,
     generation: u64,
 }
 
 impl Worker {
-    fn new(app: AppHandle, failures: Sender<Command>) -> Self {
+    fn new(app: AppHandle, failures: Sender<Command>, params: Arc<Params>) -> Self {
         Self {
             app,
             failures,
             host: cpal::default_host(),
             meters: Arc::new(MeterStore::default()),
+            params,
             live: None,
             state: EngineState::default(),
             generation: 0,
@@ -143,17 +151,22 @@ impl Worker {
         self.generation += 1;
         let generation = self.generation;
         let failures = self.failures.clone();
-        let (streams, sample_rate) =
-            streams::open(&input, &output, Arc::clone(&self.meters), move |message| {
+        self.meters.reset();
+        let (streams, sample_rate) = streams::open(
+            &input,
+            &output,
+            Arc::clone(&self.meters),
+            Arc::clone(&self.params),
+            move |message| {
                 failures
                     .send(Command::StreamFailed {
                         generation,
                         message,
                     })
                     .ok();
-            })?;
+            },
+        )?;
 
-        self.meters.reset();
         self.live = Some(Live {
             _streams: streams,
             sample_rate,

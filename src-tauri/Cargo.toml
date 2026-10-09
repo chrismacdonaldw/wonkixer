@@ -19,3 +19,4 @@ ringbuf = "0.5"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }
 assert_no_alloc = "1"
+wonkixer-dsp = { path = "../crates/dsp" }
