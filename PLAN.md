@@ -322,6 +322,12 @@ wonkitch's triplicated preferences schema.
 
 ## 7. UI design (derived from wonkitch, new palette)
 
+_Superseded 2026-10-09: the vertical card layout described here was built,
+rejected, and removed. The UI is being designed separately; see
+[docs/UI-CONTRACT.md](docs/UI-CONTRACT.md) for what the design has to work
+with. Sections 7.1, 7.2 and 7.4 still describe the shared visual language and
+the meter behaviour._
+
 ### 7.1 What is copied verbatim
 
 - **Window**: `decorations: false`, custom 40 px topbar, `data-tauri-drag-region`

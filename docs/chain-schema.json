@@ -1,0 +1,438 @@
+{
+  "stages": [
+    {
+      "id": "input",
+      "key": "input",
+      "label": "INPUT",
+      "bypassable": false
+    },
+    {
+      "id": "hpf",
+      "key": "hpf",
+      "label": "HIGH-PASS",
+      "bypassable": true
+    },
+    {
+      "id": "expander",
+      "key": "expander",
+      "label": "EXPANDER",
+      "bypassable": true
+    },
+    {
+      "id": "deesser",
+      "key": "deesser",
+      "label": "DE-ESSER",
+      "bypassable": true
+    },
+    {
+      "id": "eq",
+      "key": "eq",
+      "label": "EQ",
+      "bypassable": true
+    },
+    {
+      "id": "compressor",
+      "key": "compressor",
+      "label": "COMPRESSOR",
+      "bypassable": true
+    },
+    {
+      "id": "limiter",
+      "key": "limiter",
+      "label": "LIMITER",
+      "bypassable": true
+    },
+    {
+      "id": "output",
+      "key": "output",
+      "label": "OUTPUT",
+      "bypassable": false
+    }
+  ],
+  "params": [
+    {
+      "id": "input.gain",
+      "stage": "input",
+      "key": "input.gain",
+      "label": "Gain",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -24.0,
+      "max": 24.0,
+      "default": 0.0,
+      "step": 0.5
+    },
+    {
+      "id": "hpf.cutoff",
+      "stage": "hpf",
+      "key": "hpf.cutoff",
+      "label": "Cutoff",
+      "unit": "hertz",
+      "scale": "logarithmic",
+      "min": 40.0,
+      "max": 300.0,
+      "default": 90.0,
+      "step": 1.0
+    },
+    {
+      "id": "expander.threshold",
+      "stage": "expander",
+      "key": "expander.threshold",
+      "label": "Threshold",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -80.0,
+      "max": -20.0,
+      "default": -45.0,
+      "step": 0.5
+    },
+    {
+      "id": "expander.ratio",
+      "stage": "expander",
+      "key": "expander.ratio",
+      "label": "Ratio",
+      "unit": "ratio",
+      "scale": "linear",
+      "min": 1.0,
+      "max": 8.0,
+      "default": 2.5,
+      "step": 0.1
+    },
+    {
+      "id": "expander.range",
+      "stage": "expander",
+      "key": "expander.range",
+      "label": "Range",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": 0.0,
+      "max": 60.0,
+      "default": 30.0,
+      "step": 1.0
+    },
+    {
+      "id": "expander.attack",
+      "stage": "expander",
+      "key": "expander.attack",
+      "label": "Attack",
+      "unit": "milliseconds",
+      "scale": "logarithmic",
+      "min": 0.1,
+      "max": 50.0,
+      "default": 2.0,
+      "step": 0.1
+    },
+    {
+      "id": "expander.hold",
+      "stage": "expander",
+      "key": "expander.hold",
+      "label": "Hold",
+      "unit": "milliseconds",
+      "scale": "logarithmic",
+      "min": 0.0,
+      "max": 500.0,
+      "default": 80.0,
+      "step": 0.1
+    },
+    {
+      "id": "expander.release",
+      "stage": "expander",
+      "key": "expander.release",
+      "label": "Release",
+      "unit": "milliseconds",
+      "scale": "logarithmic",
+      "min": 10.0,
+      "max": 1000.0,
+      "default": 150.0,
+      "step": 0.1
+    },
+    {
+      "id": "expander.knee",
+      "stage": "expander",
+      "key": "expander.knee",
+      "label": "Knee",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": 0.0,
+      "max": 12.0,
+      "default": 6.0,
+      "step": 0.5
+    },
+    {
+      "id": "deesser.frequency",
+      "stage": "deesser",
+      "key": "deesser.frequency",
+      "label": "Frequency",
+      "unit": "hertz",
+      "scale": "logarithmic",
+      "min": 3000.0,
+      "max": 10000.0,
+      "default": 6500.0,
+      "step": 1.0
+    },
+    {
+      "id": "deesser.threshold",
+      "stage": "deesser",
+      "key": "deesser.threshold",
+      "label": "Threshold",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -60.0,
+      "max": 0.0,
+      "default": -30.0,
+      "step": 0.5
+    },
+    {
+      "id": "deesser.ratio",
+      "stage": "deesser",
+      "key": "deesser.ratio",
+      "label": "Ratio",
+      "unit": "ratio",
+      "scale": "linear",
+      "min": 1.0,
+      "max": 10.0,
+      "default": 4.0,
+      "step": 0.1
+    },
+    {
+      "id": "deesser.splitBand",
+      "stage": "deesser",
+      "key": "deesser.splitBand",
+      "label": "Split band",
+      "unit": "switch",
+      "scale": "linear",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 1.0,
+      "step": 1.0
+    },
+    {
+      "id": "eq.lowShelf.frequency",
+      "stage": "eq",
+      "key": "eq.lowShelf.frequency",
+      "label": "Low shelf",
+      "unit": "hertz",
+      "scale": "logarithmic",
+      "min": 40.0,
+      "max": 400.0,
+      "default": 120.0,
+      "step": 1.0
+    },
+    {
+      "id": "eq.lowShelf.gain",
+      "stage": "eq",
+      "key": "eq.lowShelf.gain",
+      "label": "Low shelf gain",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -12.0,
+      "max": 12.0,
+      "default": 0.0,
+      "step": 0.5
+    },
+    {
+      "id": "eq.lowMid.frequency",
+      "stage": "eq",
+      "key": "eq.lowMid.frequency",
+      "label": "Low mid",
+      "unit": "hertz",
+      "scale": "logarithmic",
+      "min": 100.0,
+      "max": 1000.0,
+      "default": 250.0,
+      "step": 1.0
+    },
+    {
+      "id": "eq.lowMid.gain",
+      "stage": "eq",
+      "key": "eq.lowMid.gain",
+      "label": "Low mid gain",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -12.0,
+      "max": 12.0,
+      "default": -2.5,
+      "step": 0.5
+    },
+    {
+      "id": "eq.lowMid.q",
+      "stage": "eq",
+      "key": "eq.lowMid.q",
+      "label": "Low mid Q",
+      "unit": "q",
+      "scale": "logarithmic",
+      "min": 0.3,
+      "max": 4.0,
+      "default": 1.0,
+      "step": 0.05
+    },
+    {
+      "id": "eq.presence.frequency",
+      "stage": "eq",
+      "key": "eq.presence.frequency",
+      "label": "Presence",
+      "unit": "hertz",
+      "scale": "logarithmic",
+      "min": 1500.0,
+      "max": 8000.0,
+      "default": 4000.0,
+      "step": 1.0
+    },
+    {
+      "id": "eq.presence.gain",
+      "stage": "eq",
+      "key": "eq.presence.gain",
+      "label": "Presence gain",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -12.0,
+      "max": 12.0,
+      "default": 2.5,
+      "step": 0.5
+    },
+    {
+      "id": "eq.presence.q",
+      "stage": "eq",
+      "key": "eq.presence.q",
+      "label": "Presence Q",
+      "unit": "q",
+      "scale": "logarithmic",
+      "min": 0.3,
+      "max": 4.0,
+      "default": 0.8,
+      "step": 0.05
+    },
+    {
+      "id": "eq.highShelf.frequency",
+      "stage": "eq",
+      "key": "eq.highShelf.frequency",
+      "label": "High shelf",
+      "unit": "hertz",
+      "scale": "logarithmic",
+      "min": 4000.0,
+      "max": 16000.0,
+      "default": 10000.0,
+      "step": 1.0
+    },
+    {
+      "id": "eq.highShelf.gain",
+      "stage": "eq",
+      "key": "eq.highShelf.gain",
+      "label": "High shelf gain",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -12.0,
+      "max": 12.0,
+      "default": 1.0,
+      "step": 0.5
+    },
+    {
+      "id": "compressor.threshold",
+      "stage": "compressor",
+      "key": "compressor.threshold",
+      "label": "Threshold",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -60.0,
+      "max": 0.0,
+      "default": -18.0,
+      "step": 0.5
+    },
+    {
+      "id": "compressor.ratio",
+      "stage": "compressor",
+      "key": "compressor.ratio",
+      "label": "Ratio",
+      "unit": "ratio",
+      "scale": "linear",
+      "min": 1.0,
+      "max": 20.0,
+      "default": 3.0,
+      "step": 0.1
+    },
+    {
+      "id": "compressor.knee",
+      "stage": "compressor",
+      "key": "compressor.knee",
+      "label": "Knee",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": 0.0,
+      "max": 12.0,
+      "default": 6.0,
+      "step": 0.5
+    },
+    {
+      "id": "compressor.attack",
+      "stage": "compressor",
+      "key": "compressor.attack",
+      "label": "Attack",
+      "unit": "milliseconds",
+      "scale": "logarithmic",
+      "min": 0.1,
+      "max": 100.0,
+      "default": 8.0,
+      "step": 0.1
+    },
+    {
+      "id": "compressor.release",
+      "stage": "compressor",
+      "key": "compressor.release",
+      "label": "Release",
+      "unit": "milliseconds",
+      "scale": "logarithmic",
+      "min": 10.0,
+      "max": 1000.0,
+      "default": 120.0,
+      "step": 0.1
+    },
+    {
+      "id": "compressor.makeup",
+      "stage": "compressor",
+      "key": "compressor.makeup",
+      "label": "Makeup",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": 0.0,
+      "max": 24.0,
+      "default": 6.0,
+      "step": 0.5
+    },
+    {
+      "id": "limiter.ceiling",
+      "stage": "limiter",
+      "key": "limiter.ceiling",
+      "label": "Ceiling",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -6.0,
+      "max": 0.0,
+      "default": -1.0,
+      "step": 0.1
+    },
+    {
+      "id": "limiter.release",
+      "stage": "limiter",
+      "key": "limiter.release",
+      "label": "Release",
+      "unit": "milliseconds",
+      "scale": "logarithmic",
+      "min": 10.0,
+      "max": 500.0,
+      "default": 60.0,
+      "step": 0.1
+    },
+    {
+      "id": "output.gain",
+      "stage": "output",
+      "key": "output.gain",
+      "label": "Gain",
+      "unit": "decibels",
+      "scale": "linear",
+      "min": -24.0,
+      "max": 12.0,
+      "default": 0.0,
+      "step": 0.5
+    }
+  ]
+}

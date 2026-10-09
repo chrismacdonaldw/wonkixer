@@ -13,9 +13,10 @@ See [PLAN.md](PLAN.md) for the architecture and roadmap and
 
 ## Status
 
-Milestone 2: the signal chain exists as a tested, pure-Rust library with
-built-in presets and an offline renderer. The live engine still passes audio
-through untouched; wiring the chain into it is milestone 3.
+Milestone 3, engine side: the signal chain runs live inside the engine with
+lock-free parameter updates and per-stage gain-reduction meters. The window
+shows devices, levels and engine readouts; the controls for the chain itself
+are being designed, see [docs/UI-CONTRACT.md](docs/UI-CONTRACT.md).
 
 ## Requirements
 
