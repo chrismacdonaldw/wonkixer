@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize, Serializer};
 pub enum StageId {
     Input,
     HighPass,
+    NoiseSuppressor,
     Expander,
     DeEsser,
     Equalizer,
@@ -16,16 +17,23 @@ pub enum StageId {
 }
 
 impl StageId {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
     pub const ALL: [StageId; Self::COUNT] = [
         StageId::Input,
         StageId::HighPass,
+        StageId::NoiseSuppressor,
         StageId::Expander,
         StageId::DeEsser,
         StageId::Equalizer,
         StageId::Compressor,
         StageId::Limiter,
         StageId::Output,
+    ];
+    pub const DYNAMICS: [StageId; 4] = [
+        StageId::Expander,
+        StageId::DeEsser,
+        StageId::Compressor,
+        StageId::Limiter,
     ];
 
     pub fn index(self) -> usize {
@@ -48,33 +56,150 @@ impl StageId {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Family {
+    Level,
+    Filter,
+    Cleanup,
+    Dynamics,
+    Sibilance,
+    Eq,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StageSpec {
     pub id: StageId,
     pub key: &'static str,
     pub label: &'static str,
+    pub title: &'static str,
+    pub family: Family,
     pub bypassable: bool,
+    pub optional: bool,
+    pub latency_ms: f32,
+    pub blurb: &'static str,
 }
 
-const fn stage(id: StageId, key: &'static str, label: &'static str, bypassable: bool) -> StageSpec {
+const fn stage(
+    id: StageId,
+    key: &'static str,
+    label: &'static str,
+    title: &'static str,
+    family: Family,
+    blurb: &'static str,
+) -> StageSpec {
     StageSpec {
         id,
         key,
         label,
-        bypassable,
+        title,
+        family,
+        bypassable: true,
+        optional: false,
+        latency_ms: 0.0,
+        blurb,
     }
 }
 
+const fn fixed(spec: StageSpec) -> StageSpec {
+    StageSpec {
+        bypassable: false,
+        ..spec
+    }
+}
+
+const fn optional(spec: StageSpec, latency_ms: f32) -> StageSpec {
+    StageSpec {
+        optional: true,
+        latency_ms,
+        ..spec
+    }
+}
+
+const fn delayed(spec: StageSpec, latency_ms: f32) -> StageSpec {
+    StageSpec { latency_ms, ..spec }
+}
+
 pub const STAGES: [StageSpec; StageId::COUNT] = [
-    stage(StageId::Input, "input", "INPUT", false),
-    stage(StageId::HighPass, "hpf", "HIGH-PASS", true),
-    stage(StageId::Expander, "expander", "EXPANDER", true),
-    stage(StageId::DeEsser, "deesser", "DE-ESSER", true),
-    stage(StageId::Equalizer, "eq", "EQ", true),
-    stage(StageId::Compressor, "compressor", "COMPRESSOR", true),
-    stage(StageId::Limiter, "limiter", "LIMITER", true),
-    stage(StageId::Output, "output", "OUTPUT", false),
+    fixed(stage(
+        StageId::Input,
+        "input",
+        "INPUT",
+        "Input",
+        Family::Level,
+        "Trims the mic before anything else. Aim for peaks around -12 dBFS while you talk normally.",
+    )),
+    stage(
+        StageId::HighPass,
+        "hpf",
+        "HIGH-PASS",
+        "High-pass",
+        Family::Filter,
+        "Cuts rumble, breath pops and desk thumps below your voice. Raise it until your voice starts to thin, then back off a little.",
+    ),
+    optional(
+        stage(
+            StageId::NoiseSuppressor,
+            "rnnoise",
+            "NOISE SUPPRESSION",
+            "Noise suppression",
+            Family::Cleanup,
+            "Removes steady background noise such as fans and hum, even while you talk. It works on 10 ms frames, so it adds about 10 ms of latency.",
+        ),
+        10.0,
+    ),
+    stage(
+        StageId::Expander,
+        "expander",
+        "EXPANDER",
+        "Expander",
+        Family::Dynamics,
+        "Turns room noise down in the gaps between phrases. Gentler than a gate, and it never fully mutes.",
+    ),
+    stage(
+        StageId::DeEsser,
+        "deesser",
+        "DE-ESSER",
+        "De-esser",
+        Family::Sibilance,
+        "Tames harsh s and sh sounds. Split band ducks only the highs, so the body of your voice is untouched.",
+    ),
+    stage(
+        StageId::Equalizer,
+        "eq",
+        "EQ",
+        "EQ",
+        Family::Eq,
+        "Shapes tone. A small cut near 250 Hz clears headset mud; a lift near 4 kHz adds clarity. Drag a numbered point, or type exact values below.",
+    ),
+    stage(
+        StageId::Compressor,
+        "compressor",
+        "COMPRESSOR",
+        "Compressor",
+        Family::Dynamics,
+        "Evens out loud and quiet words so people hear you at a steady level. Makeup brings the level back up afterwards.",
+    ),
+    delayed(
+        stage(
+            StageId::Limiter,
+            "limiter",
+            "LIMITER",
+            "Limiter",
+            Family::Dynamics,
+            "A brickwall at the ceiling with 5 ms lookahead. Catches shouts and laughs before they clip.",
+        ),
+        5.0,
+    ),
+    fixed(stage(
+        StageId::Output,
+        "output",
+        "OUTPUT",
+        "Output",
+        Family::Level,
+        "Final trim into the virtual cable. A hard clip at 0 dBFS follows as a safety net.",
+    )),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -95,6 +220,13 @@ pub enum Scale {
     Logarithmic,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Tier {
+    Main,
+    Detail,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParamSpec {
@@ -104,10 +236,12 @@ pub struct ParamSpec {
     pub label: &'static str,
     pub unit: Unit,
     pub scale: Scale,
+    pub tier: Tier,
     pub min: f32,
     pub max: f32,
     pub default: f32,
     pub step: f32,
+    pub coarse: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -115,16 +249,16 @@ pub enum ParamId {
     InputGain,
     HighPassCutoff,
     ExpanderThreshold,
-    ExpanderRatio,
     ExpanderRange,
+    ExpanderRatio,
     ExpanderAttack,
     ExpanderHold,
     ExpanderRelease,
     ExpanderKnee,
-    DeEsserFrequency,
     DeEsserThreshold,
-    DeEsserRatio,
+    DeEsserFrequency,
     DeEsserSplitBand,
+    DeEsserRatio,
     LowShelfFrequency,
     LowShelfGain,
     LowMidFrequency,
@@ -137,10 +271,10 @@ pub enum ParamId {
     HighShelfGain,
     CompressorThreshold,
     CompressorRatio,
-    CompressorKnee,
+    CompressorMakeup,
     CompressorAttack,
     CompressorRelease,
-    CompressorMakeup,
+    CompressorKnee,
     LimiterCeiling,
     LimiterRelease,
     OutputGain,
@@ -152,16 +286,16 @@ impl ParamId {
         ParamId::InputGain,
         ParamId::HighPassCutoff,
         ParamId::ExpanderThreshold,
-        ParamId::ExpanderRatio,
         ParamId::ExpanderRange,
+        ParamId::ExpanderRatio,
         ParamId::ExpanderAttack,
         ParamId::ExpanderHold,
         ParamId::ExpanderRelease,
         ParamId::ExpanderKnee,
-        ParamId::DeEsserFrequency,
         ParamId::DeEsserThreshold,
-        ParamId::DeEsserRatio,
+        ParamId::DeEsserFrequency,
         ParamId::DeEsserSplitBand,
+        ParamId::DeEsserRatio,
         ParamId::LowShelfFrequency,
         ParamId::LowShelfGain,
         ParamId::LowMidFrequency,
@@ -174,10 +308,10 @@ impl ParamId {
         ParamId::HighShelfGain,
         ParamId::CompressorThreshold,
         ParamId::CompressorRatio,
-        ParamId::CompressorKnee,
+        ParamId::CompressorMakeup,
         ParamId::CompressorAttack,
         ParamId::CompressorRelease,
-        ParamId::CompressorMakeup,
+        ParamId::CompressorKnee,
         ParamId::LimiterCeiling,
         ParamId::LimiterRelease,
         ParamId::OutputGain,
@@ -218,15 +352,20 @@ struct Range {
     min: f32,
     max: f32,
     step: f32,
+    coarse: f32,
 }
 
-const fn db(min: f32, max: f32, step: f32) -> Range {
+const FINE_DB: f32 = 0.1;
+const FINE_Q: f32 = 0.01;
+
+const fn db(min: f32, max: f32, coarse: f32) -> Range {
     Range {
         unit: Unit::Decibels,
         scale: Scale::Linear,
         min,
         max,
-        step,
+        step: if coarse < FINE_DB { coarse } else { FINE_DB },
+        coarse,
     }
 }
 
@@ -237,6 +376,7 @@ const fn hz(min: f32, max: f32) -> Range {
         min,
         max,
         step: 1.0,
+        coarse: 1.0,
     }
 }
 
@@ -247,6 +387,7 @@ const fn ms(min: f32, max: f32) -> Range {
         min,
         max,
         step: 0.1,
+        coarse: 0.1,
     }
 }
 
@@ -257,6 +398,7 @@ const fn ratio(min: f32, max: f32) -> Range {
         min,
         max,
         step: 0.1,
+        coarse: 0.1,
     }
 }
 
@@ -266,7 +408,8 @@ const fn q(min: f32, max: f32) -> Range {
         scale: Scale::Logarithmic,
         min,
         max,
-        step: 0.05,
+        step: FINE_Q,
+        coarse: 0.05,
     }
 }
 
@@ -277,6 +420,7 @@ const fn switch() -> Range {
         min: 0.0,
         max: 1.0,
         step: 1.0,
+        coarse: 1.0,
     }
 }
 
@@ -285,6 +429,7 @@ const fn param(
     stage: StageId,
     key: &'static str,
     label: &'static str,
+    tier: Tier,
     range: Range,
     default: f32,
 ) -> ParamSpec {
@@ -295,12 +440,16 @@ const fn param(
         label,
         unit: range.unit,
         scale: range.scale,
+        tier,
         min: range.min,
         max: range.max,
         default,
         step: range.step,
+        coarse: range.coarse,
     }
 }
+
+use Tier::{Detail, Main};
 
 pub const SPECS: [ParamSpec; ParamId::COUNT] = [
     param(
@@ -308,6 +457,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Input,
         "input.gain",
         "Gain",
+        Main,
         db(-24.0, 24.0, 0.5),
         0.0,
     ),
@@ -316,6 +466,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::HighPass,
         "hpf.cutoff",
         "Cutoff",
+        Main,
         hz(40.0, 300.0),
         90.0,
     ),
@@ -324,30 +475,34 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Expander,
         "expander.threshold",
         "Threshold",
+        Main,
         db(-80.0, -20.0, 0.5),
         -45.0,
-    ),
-    param(
-        ParamId::ExpanderRatio,
-        StageId::Expander,
-        "expander.ratio",
-        "Ratio",
-        ratio(1.0, 8.0),
-        2.5,
     ),
     param(
         ParamId::ExpanderRange,
         StageId::Expander,
         "expander.range",
         "Range",
+        Main,
         db(0.0, 60.0, 1.0),
         30.0,
+    ),
+    param(
+        ParamId::ExpanderRatio,
+        StageId::Expander,
+        "expander.ratio",
+        "Ratio",
+        Main,
+        ratio(1.0, 8.0),
+        2.5,
     ),
     param(
         ParamId::ExpanderAttack,
         StageId::Expander,
         "expander.attack",
         "Attack",
+        Detail,
         ms(0.1, 50.0),
         2.0,
     ),
@@ -356,6 +511,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Expander,
         "expander.hold",
         "Hold",
+        Detail,
         ms(0.0, 500.0),
         80.0,
     ),
@@ -364,6 +520,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Expander,
         "expander.release",
         "Release",
+        Detail,
         ms(10.0, 1000.0),
         150.0,
     ),
@@ -372,46 +529,52 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Expander,
         "expander.knee",
         "Knee",
+        Detail,
         db(0.0, 12.0, 0.5),
         6.0,
-    ),
-    param(
-        ParamId::DeEsserFrequency,
-        StageId::DeEsser,
-        "deesser.frequency",
-        "Frequency",
-        hz(3000.0, 10000.0),
-        6500.0,
     ),
     param(
         ParamId::DeEsserThreshold,
         StageId::DeEsser,
         "deesser.threshold",
         "Threshold",
+        Main,
         db(-60.0, 0.0, 0.5),
         -30.0,
+    ),
+    param(
+        ParamId::DeEsserFrequency,
+        StageId::DeEsser,
+        "deesser.frequency",
+        "Frequency",
+        Main,
+        hz(3000.0, 10000.0),
+        6500.0,
+    ),
+    param(
+        ParamId::DeEsserSplitBand,
+        StageId::DeEsser,
+        "deesser.splitBand",
+        "Mode",
+        Main,
+        switch(),
+        1.0,
     ),
     param(
         ParamId::DeEsserRatio,
         StageId::DeEsser,
         "deesser.ratio",
         "Ratio",
+        Detail,
         ratio(1.0, 10.0),
         4.0,
-    ),
-    param(
-        ParamId::DeEsserSplitBand,
-        StageId::DeEsser,
-        "deesser.splitBand",
-        "Split band",
-        switch(),
-        1.0,
     ),
     param(
         ParamId::LowShelfFrequency,
         StageId::Equalizer,
         "eq.lowShelf.frequency",
         "Low shelf",
+        Main,
         hz(40.0, 400.0),
         120.0,
     ),
@@ -420,6 +583,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Equalizer,
         "eq.lowShelf.gain",
         "Low shelf gain",
+        Main,
         db(-12.0, 12.0, 0.5),
         0.0,
     ),
@@ -428,6 +592,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Equalizer,
         "eq.lowMid.frequency",
         "Low mid",
+        Main,
         hz(100.0, 1000.0),
         250.0,
     ),
@@ -436,6 +601,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Equalizer,
         "eq.lowMid.gain",
         "Low mid gain",
+        Main,
         db(-12.0, 12.0, 0.5),
         -2.5,
     ),
@@ -444,6 +610,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Equalizer,
         "eq.lowMid.q",
         "Low mid Q",
+        Main,
         q(0.3, 4.0),
         1.0,
     ),
@@ -452,6 +619,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Equalizer,
         "eq.presence.frequency",
         "Presence",
+        Main,
         hz(1500.0, 8000.0),
         4000.0,
     ),
@@ -460,6 +628,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Equalizer,
         "eq.presence.gain",
         "Presence gain",
+        Main,
         db(-12.0, 12.0, 0.5),
         2.5,
     ),
@@ -468,6 +637,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Equalizer,
         "eq.presence.q",
         "Presence Q",
+        Main,
         q(0.3, 4.0),
         0.8,
     ),
@@ -476,6 +646,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Equalizer,
         "eq.highShelf.frequency",
         "High shelf",
+        Main,
         hz(4000.0, 16000.0),
         10000.0,
     ),
@@ -484,6 +655,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Equalizer,
         "eq.highShelf.gain",
         "High shelf gain",
+        Main,
         db(-12.0, 12.0, 0.5),
         1.0,
     ),
@@ -492,6 +664,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Compressor,
         "compressor.threshold",
         "Threshold",
+        Main,
         db(-60.0, 0.0, 0.5),
         -18.0,
     ),
@@ -500,15 +673,17 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Compressor,
         "compressor.ratio",
         "Ratio",
+        Main,
         ratio(1.0, 20.0),
         3.0,
     ),
     param(
-        ParamId::CompressorKnee,
+        ParamId::CompressorMakeup,
         StageId::Compressor,
-        "compressor.knee",
-        "Knee",
-        db(0.0, 12.0, 0.5),
+        "compressor.makeup",
+        "Makeup",
+        Main,
+        db(0.0, 24.0, 0.5),
         6.0,
     ),
     param(
@@ -516,6 +691,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Compressor,
         "compressor.attack",
         "Attack",
+        Detail,
         ms(0.1, 100.0),
         8.0,
     ),
@@ -524,15 +700,17 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Compressor,
         "compressor.release",
         "Release",
+        Detail,
         ms(10.0, 1000.0),
         120.0,
     ),
     param(
-        ParamId::CompressorMakeup,
+        ParamId::CompressorKnee,
         StageId::Compressor,
-        "compressor.makeup",
-        "Makeup",
-        db(0.0, 24.0, 0.5),
+        "compressor.knee",
+        "Knee",
+        Detail,
+        db(0.0, 12.0, 0.5),
         6.0,
     ),
     param(
@@ -540,6 +718,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Limiter,
         "limiter.ceiling",
         "Ceiling",
+        Main,
         db(-6.0, 0.0, 0.1),
         -1.0,
     ),
@@ -548,6 +727,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Limiter,
         "limiter.release",
         "Release",
+        Detail,
         ms(10.0, 500.0),
         60.0,
     ),
@@ -556,6 +736,7 @@ pub const SPECS: [ParamSpec; ParamId::COUNT] = [
         StageId::Output,
         "output.gain",
         "Gain",
+        Main,
         db(-24.0, 12.0, 0.5),
         0.0,
     ),
@@ -571,7 +752,7 @@ impl Default for ParamValues {
     fn default() -> Self {
         Self {
             values: std::array::from_fn(|index| SPECS[index].default),
-            bypassed: [false; StageId::COUNT],
+            bypassed: std::array::from_fn(|index| STAGES[index].optional),
         }
     }
 }
@@ -601,11 +782,12 @@ impl ParamValues {
         ParamId::ALL.iter().map(move |&id| (id, self.get(id)))
     }
 
-    pub fn bypassed_stages(&self) -> impl Iterator<Item = StageId> + '_ {
+    pub fn bypasses(&self) -> impl Iterator<Item = (StageId, bool)> + '_ {
         StageId::ALL
             .iter()
             .copied()
-            .filter(move |&stage| self.is_bypassed(stage))
+            .filter(|stage| stage.spec().bypassable)
+            .map(move |stage| (stage, self.is_bypassed(stage)))
     }
 }
 
@@ -678,8 +860,9 @@ impl Params {
 
 fn bypass_bits(values: &ParamValues) -> u32 {
     values
-        .bypassed_stages()
-        .fold(0, |bits, stage| bits | (1u32 << stage.index()))
+        .bypasses()
+        .filter(|&(_, bypassed)| bypassed)
+        .fold(0, |bits, (stage, _)| bits | (1u32 << stage.index()))
 }
 
 #[derive(Serialize)]
@@ -769,13 +952,37 @@ mod tests {
                 "{}",
                 spec.key
             );
-            assert!(spec.step > 0.0, "{}", spec.key);
+            assert!(spec.step > 0.0 && spec.step <= spec.coarse, "{}", spec.key);
             assert!(keys.insert(spec.key), "duplicate key {}", spec.key);
             if spec.scale == Scale::Logarithmic {
                 assert!(
                     spec.min > 0.0 || spec.unit == Unit::Milliseconds,
                     "{}",
                     spec.key
+                );
+            }
+        }
+        let mut stage_keys = std::collections::HashSet::new();
+        for spec in STAGES {
+            assert!(stage_keys.insert(spec.key), "duplicate stage {}", spec.key);
+            assert!(!spec.optional || spec.bypassable, "{}", spec.key);
+        }
+    }
+
+    #[test]
+    fn main_settings_come_before_detail_settings_within_a_stage() {
+        for stage in StageId::ALL {
+            let tiers: Vec<Tier> = SPECS
+                .iter()
+                .filter(|spec| spec.stage == stage)
+                .map(|spec| spec.tier)
+                .collect();
+            let first_detail = tiers.iter().position(|&tier| tier == Tier::Detail);
+            if let Some(position) = first_detail {
+                assert!(
+                    tiers[position..].iter().all(|&tier| tier == Tier::Detail),
+                    "{}",
+                    stage.key()
                 );
             }
         }
@@ -795,6 +1002,14 @@ mod tests {
     }
 
     #[test]
+    fn optional_stages_start_bypassed_and_core_stages_start_on() {
+        let values = ParamValues::default();
+        assert!(values.is_bypassed(StageId::NoiseSuppressor));
+        assert!(!values.is_bypassed(StageId::Compressor));
+        assert!(!values.is_bypassed(StageId::Input));
+    }
+
+    #[test]
     fn shared_params_round_trip_through_atomics_with_a_generation() {
         let params = Params::new(&ParamValues::default());
         let mut seen = params.generation();
@@ -803,9 +1018,11 @@ mod tests {
 
         params.set(ParamId::CompressorRatio, 4.0);
         params.set_bypassed(StageId::Limiter, true);
+        params.set_bypassed(StageId::NoiseSuppressor, false);
         assert!(params.load_if_changed(&mut seen, &mut local));
         assert_eq!(local.get(ParamId::CompressorRatio), 4.0);
         assert!(local.is_bypassed(StageId::Limiter));
+        assert!(!local.is_bypassed(StageId::NoiseSuppressor));
         assert!(!params.load_if_changed(&mut seen, &mut local));
 
         params.set_bypassed(StageId::Limiter, false);
@@ -819,7 +1036,7 @@ mod tests {
         let parsed: ParamId = serde_json::from_str("\"limiter.ceiling\"").expect("parse");
         assert_eq!(parsed, ParamId::LimiterCeiling);
         assert!(serde_json::from_str::<ParamId>("\"nope\"").is_err());
-        let stage: StageId = serde_json::from_str("\"deesser\"").expect("stage");
-        assert_eq!(stage, StageId::DeEsser);
+        let stage: StageId = serde_json::from_str("\"rnnoise\"").expect("stage");
+        assert_eq!(stage, StageId::NoiseSuppressor);
     }
 }

@@ -2,7 +2,7 @@ use super::{LEVEL_SMOOTH_MS, Stage};
 use crate::dynamics::{GainSmoother, expander_reduction};
 use crate::params::{ParamId, ParamValues};
 use crate::smoother::Smoother;
-use crate::units::{db_to_gain, gain_to_db, ms_to_samples};
+use crate::units::{MIN_DB, db_to_gain, gain_to_db, ms_to_samples};
 
 pub struct Expander {
     sample_rate: f32,
@@ -14,6 +14,7 @@ pub struct Expander {
     hold_samples: usize,
     hold_remaining: usize,
     reduction: f32,
+    level_db: f32,
 }
 
 impl Expander {
@@ -34,6 +35,7 @@ impl Expander {
             hold_samples,
             hold_remaining: hold_samples,
             reduction: 0.0,
+            level_db: MIN_DB,
         }
     }
 }
@@ -54,8 +56,9 @@ impl Stage for Expander {
     }
 
     fn process(&mut self, sample: f32) -> f32 {
+        self.level_db = gain_to_db(sample.abs());
         let desired = expander_reduction(
-            gain_to_db(sample.abs()),
+            self.level_db,
             self.threshold.advance(),
             self.ratio.advance(),
             self.knee.advance(),
@@ -80,9 +83,14 @@ impl Stage for Expander {
         self.reduction
     }
 
+    fn detector_db(&self) -> f32 {
+        self.level_db
+    }
+
     fn reset(&mut self) {
         self.smoother.reset();
         self.reduction = 0.0;
+        self.level_db = MIN_DB;
         self.hold_remaining = self.hold_samples;
     }
 }

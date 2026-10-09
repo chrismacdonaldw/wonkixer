@@ -11,7 +11,9 @@ pub mod smoother;
 pub mod stages;
 pub mod units;
 
-pub use chain::{Chain, GainReduction};
+pub use chain::{BlockReport, Chain, StageTelemetry};
 pub use document::ParamDocument;
-pub use params::{ParamId, ParamSpec, ParamValues, Params, Scale, StageId, StageSpec, Unit};
+pub use params::{
+    Family, ParamId, ParamSpec, ParamValues, Params, Scale, StageId, StageSpec, Tier, Unit,
+};
 pub use presets::Preset;

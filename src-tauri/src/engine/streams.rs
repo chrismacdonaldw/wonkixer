@@ -160,7 +160,8 @@ fn output_callback(
             if outlet.pull(block) == Pull::Underrun {
                 meters.record_dropout();
             }
-            meters.record_reduction(processor.process(block));
+            meters.record_report(processor.process(block));
+            meters.set_processing_latency(processor.latency_samples());
             let mut peak = 0.0f32;
             for (frame, &sample) in data.chunks_exact_mut(channels).zip(block.iter()) {
                 peak = peak.max(sample.abs());

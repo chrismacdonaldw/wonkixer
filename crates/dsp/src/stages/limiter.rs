@@ -3,7 +3,7 @@ use crate::delay::{DelayLine, SlidingMax};
 use crate::dynamics::{GainSmoother, limiter_reduction};
 use crate::params::{ParamId, ParamValues};
 use crate::smoother::Smoother;
-use crate::units::{db_to_gain, gain_to_db, ms_to_samples};
+use crate::units::{MIN_DB, db_to_gain, gain_to_db, ms_to_samples};
 
 pub const LOOKAHEAD_MS: f32 = 5.0;
 const ATTACK_DIVISOR: f32 = 5.0;
@@ -15,6 +15,7 @@ pub struct Limiter {
     window: SlidingMax,
     smoother: GainSmoother,
     reduction: f32,
+    level_db: f32,
 }
 
 impl Limiter {
@@ -35,6 +36,7 @@ impl Limiter {
                 sample_rate,
             ),
             reduction: 0.0,
+            level_db: MIN_DB,
         }
     }
 
@@ -57,7 +59,8 @@ impl Stage for Limiter {
         let peak = self.window.push(sample.abs());
         let delayed = self.delay.push(sample);
         let ceiling_db = self.ceiling.advance();
-        let desired = limiter_reduction(gain_to_db(peak), ceiling_db);
+        self.level_db = gain_to_db(peak);
+        let desired = limiter_reduction(self.level_db, ceiling_db);
         self.reduction = self.smoother.follow(desired);
         let ceiling = db_to_gain(ceiling_db);
         (delayed * db_to_gain(-self.reduction)).clamp(-ceiling, ceiling)
@@ -67,10 +70,15 @@ impl Stage for Limiter {
         self.reduction
     }
 
+    fn detector_db(&self) -> f32 {
+        self.level_db
+    }
+
     fn reset(&mut self) {
         self.delay.reset();
         self.window.reset();
         self.smoother.reset();
         self.reduction = 0.0;
+        self.level_db = MIN_DB;
     }
 }

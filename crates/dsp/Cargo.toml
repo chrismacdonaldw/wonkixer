@@ -8,6 +8,7 @@ repository.workspace = true
 name = "wonkixer_dsp"
 
 [dependencies]
+nnnoiseless = { version = "0.5", default-features = false }
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

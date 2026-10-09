@@ -5,7 +5,7 @@ use crate::biquad::{Biquad, Coefficients};
 use crate::dynamics::{GainSmoother, compressor_reduction};
 use crate::params::{ParamId, ParamValues};
 use crate::smoother::Smoother;
-use crate::units::{db_to_gain, gain_to_db};
+use crate::units::{MIN_DB, db_to_gain, gain_to_db};
 
 const SIDECHAIN_Q: f32 = 1.0;
 const SPLIT_RATIO: f32 = 0.75;
@@ -24,6 +24,7 @@ pub struct DeEsser {
     split: [Biquad; 2],
     smoother: GainSmoother,
     reduction: f32,
+    level_db: f32,
 }
 
 impl DeEsser {
@@ -48,6 +49,7 @@ impl DeEsser {
             split: [split, split],
             smoother: GainSmoother::new(ATTACK_MS, RELEASE_MS, sample_rate),
             reduction: 0.0,
+            level_db: MIN_DB,
         }
     }
 
@@ -91,8 +93,9 @@ impl Stage for DeEsser {
             self.retune(frequency);
         }
         let detected = self.sidechain.process(sample);
+        self.level_db = gain_to_db(detected.abs());
         let desired = compressor_reduction(
-            gain_to_db(detected.abs()),
+            self.level_db,
             self.threshold.advance(),
             self.ratio.advance(),
             KNEE_DB,
@@ -111,6 +114,10 @@ impl Stage for DeEsser {
         self.reduction
     }
 
+    fn detector_db(&self) -> f32 {
+        self.level_db
+    }
+
     fn reset(&mut self) {
         self.sidechain.reset();
         for stage in &mut self.split {
@@ -118,5 +125,6 @@ impl Stage for DeEsser {
         }
         self.smoother.reset();
         self.reduction = 0.0;
+        self.level_db = MIN_DB;
     }
 }

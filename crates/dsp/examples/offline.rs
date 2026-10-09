@@ -2,7 +2,7 @@ use std::env;
 use std::error::Error;
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
-use wonkixer_dsp::{Chain, GainReduction, ParamValues, presets};
+use wonkixer_dsp::{BlockReport, Chain, ParamValues, StageId, presets};
 
 const BLOCK: usize = 480;
 const USAGE: &str = "usage: offline <input.wav> <output.wav> [preset name]";
@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut chain = Chain::new(spec.sample_rate);
     chain.apply(&values);
-    let mut peak = GainReduction::NONE;
+    let mut peak = BlockReport::NONE;
     for block in mono.chunks_mut(BLOCK) {
         peak = peak.max(chain.process_block(block));
     }
@@ -59,9 +59,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     writer.finalize()?;
 
-    println!(
-        "peak gain reduction  expander {:.1} dB  de-esser {:.1} dB  compressor {:.1} dB  limiter {:.1} dB",
-        peak.expander, peak.deesser, peak.compressor, peak.limiter
-    );
+    println!("peak gain reduction");
+    for stage in StageId::DYNAMICS {
+        println!(
+            "  {:<12} {:>5.1} dB",
+            stage.key(),
+            peak.get(stage).reduction_db
+        );
+    }
     Ok(())
 }

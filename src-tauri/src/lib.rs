@@ -1,7 +1,12 @@
 mod commands;
 mod engine;
+mod preferences;
+mod presets;
 
 use tauri::Manager;
+
+use preferences::PreferencesStore;
+use presets::PresetStore;
 
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -9,7 +14,12 @@ static ALLOCATOR: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisable
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            let data_dir = app.path().app_data_dir()?;
+            app.manage(PreferencesStore::load(data_dir.join("preferences.json")));
+            app.manage(PresetStore::new(data_dir.join("presets")));
             app.manage(engine::Engine::spawn(app.handle().clone()));
             Ok(())
         })
@@ -23,6 +33,16 @@ pub fn run() {
             commands::set_param,
             commands::set_bypass,
             commands::set_params,
+            commands::get_preferences,
+            commands::save_preferences,
+            commands::list_presets,
+            commands::load_preset,
+            commands::save_user_preset,
+            commands::rename_user_preset,
+            commands::delete_user_preset,
+            commands::import_preset,
+            commands::export_preset,
+            commands::open_presets_folder,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build wonkixer")

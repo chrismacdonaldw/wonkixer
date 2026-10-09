@@ -1,9 +1,17 @@
-use tauri::State;
+use std::path::PathBuf;
+
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 use wonkixer_dsp::params::{self, Schema};
-use wonkixer_dsp::{ParamId, ParamValues, StageId};
+use wonkixer_dsp::{ParamId, ParamValues, StageId, presets};
 
 use crate::engine::devices::{self, AudioDevices};
 use crate::engine::{Engine, EngineState};
+use crate::preferences::{Preferences, PreferencesStore, PresetKind};
+use crate::presets::{PresetCatalog, PresetStore, PresetSummary};
+
+const PRESET_FILTER: &str = "wonkixer preset";
 
 #[tauri::command]
 pub async fn list_audio_devices() -> Result<AudioDevices, String> {
@@ -55,4 +63,119 @@ pub fn set_bypass(stage: StageId, bypassed: bool, engine: State<'_, Engine>) {
 pub fn set_params(values: ParamValues, engine: State<'_, Engine>) -> ParamValues {
     engine.params().replace(&values);
     engine.params().snapshot()
+}
+
+#[tauri::command]
+pub fn get_preferences(store: State<'_, PreferencesStore>) -> Result<Preferences, String> {
+    store.current()
+}
+
+#[tauri::command]
+pub fn save_preferences(
+    preferences: Preferences,
+    store: State<'_, PreferencesStore>,
+) -> Result<Preferences, String> {
+    store.save(preferences)
+}
+
+#[tauri::command]
+pub fn list_presets(store: State<'_, PresetStore>) -> Result<PresetCatalog, String> {
+    store.catalog()
+}
+
+#[tauri::command]
+pub fn load_preset(
+    kind: PresetKind,
+    name: String,
+    store: State<'_, PresetStore>,
+) -> Result<ParamValues, String> {
+    match kind {
+        PresetKind::Builtin => presets::find(&name)
+            .map(|preset| preset.values)
+            .ok_or_else(|| format!("There is no built-in preset named \"{name}\".")),
+        PresetKind::User => store.load(&name),
+    }
+}
+
+#[tauri::command]
+pub fn save_user_preset(
+    name: String,
+    values: ParamValues,
+    store: State<'_, PresetStore>,
+) -> Result<PresetSummary, String> {
+    store.save(&name, &values)
+}
+
+#[tauri::command]
+pub fn rename_user_preset(
+    from: String,
+    to: String,
+    store: State<'_, PresetStore>,
+) -> Result<PresetSummary, String> {
+    store.rename(&from, &to)
+}
+
+#[tauri::command]
+pub fn delete_user_preset(name: String, store: State<'_, PresetStore>) -> Result<(), String> {
+    store.delete(&name)
+}
+
+#[tauri::command]
+pub async fn import_preset(
+    app: AppHandle,
+    store: State<'_, PresetStore>,
+) -> Result<Option<PresetSummary>, String> {
+    let dir = store.dir().to_path_buf();
+    let picked = pick_file(app, dir).await?;
+    picked.map(|path| store.import(&path)).transpose()
+}
+
+#[tauri::command]
+pub async fn export_preset(
+    app: AppHandle,
+    name: String,
+    values: ParamValues,
+    store: State<'_, PresetStore>,
+) -> Result<Option<String>, String> {
+    let suggested = format!("{}.json", name.trim());
+    let Some(target) = pick_save_target(app, suggested).await? else {
+        return Ok(None);
+    };
+    store.export(&values, &target)?;
+    Ok(Some(target.display().to_string()))
+}
+
+#[tauri::command]
+pub fn open_presets_folder(app: AppHandle, store: State<'_, PresetStore>) -> Result<(), String> {
+    std::fs::create_dir_all(store.dir())
+        .map_err(|error| format!("Could not create the presets folder: {error}"))?;
+    app.opener()
+        .open_path(store.dir().display().to_string(), None::<String>)
+        .map_err(|error| format!("Could not open the presets folder: {error}"))
+}
+
+async fn pick_file(app: AppHandle, start_in: PathBuf) -> Result<Option<PathBuf>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter(PRESET_FILTER, &["json"])
+            .set_directory(start_in)
+            .blocking_pick_file()
+            .and_then(|file| file.as_path().map(|path| path.to_path_buf()))
+    })
+    .await
+    .map_err(|error| format!("The file picker failed: {error}"))
+}
+
+async fn pick_save_target(app: AppHandle, file_name: String) -> Result<Option<PathBuf>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter(PRESET_FILTER, &["json"])
+            .set_file_name(file_name)
+            .blocking_save_file()
+            .and_then(|file| file.as_path().map(|path| path.to_path_buf()))
+    })
+    .await
+    .map_err(|error| format!("The save dialog failed: {error}"))
 }

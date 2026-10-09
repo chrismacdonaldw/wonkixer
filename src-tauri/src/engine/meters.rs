@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde::Serialize;
-use wonkixer_dsp::GainReduction;
+use wonkixer_dsp::units::MIN_DB;
+use wonkixer_dsp::{BlockReport, StageId};
 
 const FLOOR_DB: f32 = -100.0;
 const CLIP_LEVEL: f32 = 0.999;
@@ -15,22 +17,11 @@ pub struct MeterStore {
     ring_fill: AtomicU32,
     processing_latency: AtomicU32,
     dropouts: AtomicU32,
-    expander: AtomicU32,
-    deesser: AtomicU32,
-    compressor: AtomicU32,
-    limiter: AtomicU32,
+    reduction: [AtomicU32; StageId::COUNT],
+    detector: [AtomicU32; StageId::COUNT],
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReductionFrame {
-    pub expander: f32,
-    pub deesser: f32,
-    pub compressor: f32,
-    pub limiter: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeterFrame {
     pub input_peak_db: f32,
@@ -38,7 +29,8 @@ pub struct MeterFrame {
     pub clipped: bool,
     pub latency_ms: f32,
     pub dropouts: u32,
-    pub gain_reduction: ReductionFrame,
+    pub gain_reduction: BTreeMap<&'static str, f32>,
+    pub detector_db: BTreeMap<&'static str, f32>,
 }
 
 impl MeterStore {
@@ -56,15 +48,14 @@ impl MeterStore {
             .store(clamp_u32(ring_fill), Ordering::Relaxed);
     }
 
-    pub fn record_reduction(&self, reduction: GainReduction) {
-        self.expander
-            .fetch_max(reduction.expander.to_bits(), Ordering::Relaxed);
-        self.deesser
-            .fetch_max(reduction.deesser.to_bits(), Ordering::Relaxed);
-        self.compressor
-            .fetch_max(reduction.compressor.to_bits(), Ordering::Relaxed);
-        self.limiter
-            .fetch_max(reduction.limiter.to_bits(), Ordering::Relaxed);
+    pub fn record_report(&self, report: BlockReport) {
+        for stage in StageId::DYNAMICS {
+            let telemetry = report.get(stage);
+            self.reduction[stage.index()]
+                .fetch_max(telemetry.reduction_db.to_bits(), Ordering::Relaxed);
+            let lifted = (telemetry.detector_db - MIN_DB).max(0.0);
+            self.detector[stage.index()].fetch_max(lifted.to_bits(), Ordering::Relaxed);
+        }
     }
 
     pub fn record_dropout(&self) {
@@ -85,11 +76,10 @@ impl MeterStore {
             &self.ring_fill,
             &self.processing_latency,
             &self.dropouts,
-            &self.expander,
-            &self.deesser,
-            &self.compressor,
-            &self.limiter,
         ] {
+            cell.store(0, Ordering::Relaxed);
+        }
+        for cell in self.reduction.iter().chain(self.detector.iter()) {
             cell.store(0, Ordering::Relaxed);
         }
     }
@@ -107,12 +97,14 @@ impl MeterStore {
             clipped: output_peak >= CLIP_LEVEL,
             latency_ms: buffered_frames as f32 * 1000.0 / sample_rate as f32,
             dropouts: self.dropouts.load(Ordering::Relaxed),
-            gain_reduction: ReductionFrame {
-                expander: take(&self.expander),
-                deesser: take(&self.deesser),
-                compressor: take(&self.compressor),
-                limiter: take(&self.limiter),
-            },
+            gain_reduction: StageId::DYNAMICS
+                .iter()
+                .map(|&stage| (stage.key(), take(&self.reduction[stage.index()])))
+                .collect(),
+            detector_db: StageId::DYNAMICS
+                .iter()
+                .map(|&stage| (stage.key(), take(&self.detector[stage.index()]) + MIN_DB))
+                .collect(),
         }
     }
 }
@@ -136,6 +128,7 @@ fn clamp_u32(value: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wonkixer_dsp::StageTelemetry;
 
     #[test]
     fn peaks_hold_the_maximum_until_read_then_reset() {
@@ -167,34 +160,44 @@ mod tests {
     }
 
     #[test]
-    fn gain_reduction_holds_the_block_maximum_until_read() {
+    fn telemetry_holds_the_block_maximum_per_stage_until_read() {
         let meters = MeterStore::default();
-        meters.record_reduction(GainReduction {
-            expander: 3.0,
-            deesser: 0.0,
-            compressor: 6.0,
-            limiter: 1.0,
-        });
-        meters.record_reduction(GainReduction {
-            expander: 1.0,
-            deesser: 2.0,
-            compressor: 4.0,
-            limiter: 0.0,
-        });
-
-        let first = meters.snapshot(48_000).gain_reduction;
-        let second = meters.snapshot(48_000).gain_reduction;
-
-        assert_eq!(
-            first,
-            ReductionFrame {
-                expander: 3.0,
-                deesser: 2.0,
-                compressor: 6.0,
-                limiter: 1.0
-            }
+        meters.record_report(
+            BlockReport::NONE
+                .with_stage(
+                    StageId::Compressor,
+                    StageTelemetry {
+                        reduction_db: 6.0,
+                        detector_db: -20.0,
+                    },
+                )
+                .with_stage(
+                    StageId::Limiter,
+                    StageTelemetry {
+                        reduction_db: 1.0,
+                        detector_db: -3.0,
+                    },
+                ),
         );
-        assert_eq!(second, ReductionFrame::default());
+        meters.record_report(BlockReport::NONE.with_stage(
+            StageId::Compressor,
+            StageTelemetry {
+                reduction_db: 4.0,
+                detector_db: -12.0,
+            },
+        ));
+
+        let first = meters.snapshot(48_000);
+        let second = meters.snapshot(48_000);
+
+        assert_eq!(first.gain_reduction["compressor"], 6.0);
+        assert_eq!(first.gain_reduction["limiter"], 1.0);
+        assert_eq!(first.gain_reduction["expander"], 0.0);
+        assert!((first.detector_db["compressor"] - -12.0).abs() < 1e-4);
+        assert!((first.detector_db["limiter"] - -3.0).abs() < 1e-4);
+        assert_eq!(first.detector_db["expander"], MIN_DB);
+        assert_eq!(second.gain_reduction["compressor"], 0.0);
+        assert_eq!(second.detector_db["compressor"], MIN_DB);
     }
 
     #[test]

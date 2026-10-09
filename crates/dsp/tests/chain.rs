@@ -1,7 +1,7 @@
 use std::f32::consts::TAU;
 
 use wonkixer_dsp::units::gain_to_db;
-use wonkixer_dsp::{Chain, GainReduction, ParamId, ParamValues, StageId};
+use wonkixer_dsp::{BlockReport, Chain, ParamId, ParamValues, StageId};
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 480;
@@ -21,10 +21,10 @@ fn peak_db(samples: &[f32]) -> f32 {
     )
 }
 
-fn run(chain: &mut Chain, samples: &mut [f32]) -> GainReduction {
+fn run(chain: &mut Chain, samples: &mut [f32]) -> BlockReport {
     samples
         .chunks_mut(BLOCK)
-        .fold(GainReduction::NONE, |peak, block| {
+        .fold(BlockReport::NONE, |peak, block| {
             peak.max(chain.process_block(block))
         })
 }
@@ -54,6 +54,13 @@ fn render(values: &ParamValues, mut samples: Vec<f32>) -> Vec<f32> {
     samples
 }
 
+fn largest_step(samples: &[f32]) -> f32 {
+    samples
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).abs())
+        .fold(0.0f32, f32::max)
+}
+
 #[test]
 fn high_pass_removes_rumble_and_keeps_voice() {
     let values = only(StageId::HighPass);
@@ -77,15 +84,23 @@ fn compressor_reduces_by_the_static_curve_and_reports_it() {
     let mut chain = Chain::new(RATE);
     chain.apply(&values);
     let mut tone = sine(1_000.0, 1.0, 0.5);
-    let reduction = run(&mut chain, &mut tone);
+    let report = run(&mut chain, &mut tone);
+    let compressor = report.get(StageId::Compressor);
 
     assert!(
         (peak_db(second_half(&tone)) - -14.0).abs() < 0.5,
         "{}",
         peak_db(second_half(&tone))
     );
-    assert!((reduction.compressor - 8.0).abs() < 0.5, "{reduction:?}");
-    assert_eq!(reduction.limiter, 0.0);
+    assert!(
+        (compressor.reduction_db - 8.0).abs() < 0.5,
+        "{compressor:?}"
+    );
+    assert!(
+        (compressor.detector_db - -6.02).abs() < 0.1,
+        "{compressor:?}"
+    );
+    assert_eq!(report.get(StageId::Limiter).reduction_db, 0.0);
 }
 
 #[test]
@@ -117,10 +132,13 @@ fn limiter_never_exceeds_the_ceiling_and_recovers() {
     signal.extend(sine(1_000.0, 0.5, 0.1));
     let mut chain = Chain::new(RATE);
     chain.apply(&values);
-    let reduction = run(&mut chain, &mut signal);
+    let report = run(&mut chain, &mut signal);
 
     assert!(peak_db(&signal) <= -1.0 + 0.01, "{}", peak_db(&signal));
-    assert!(reduction.limiter > 6.0, "{reduction:?}");
+    assert!(
+        report.get(StageId::Limiter).reduction_db > 6.0,
+        "{report:?}"
+    );
     assert!((peak_db(window(&signal, 0.8, 0.2)) - -20.0).abs() < 0.5);
     assert_eq!(chain.latency_samples(), 240);
 }
@@ -142,6 +160,26 @@ fn de_esser_ducks_sibilance_more_than_body() {
         "body {body_db} sibilance {sibilance_db}"
     );
     assert!((body_db - -10.0).abs() < 1.0, "{body_db}");
+}
+
+#[test]
+fn noise_suppression_adds_a_frame_of_latency_only_while_in_the_chain() {
+    let mut chain = Chain::new(RATE);
+    assert_eq!(chain.latency_samples(), 240);
+
+    let mut values = ParamValues::default();
+    values.set_bypassed(StageId::NoiseSuppressor, false);
+    chain.apply(&values);
+    assert_eq!(chain.latency_samples(), 720);
+
+    let mut tone = sine(300.0, 1.0, 0.3);
+    run(&mut chain, &mut tone);
+    assert!(tone.iter().all(|sample| sample.is_finite()));
+    assert!(
+        largest_step(&tone) < 0.1,
+        "stepped by {}",
+        largest_step(&tone)
+    );
 }
 
 #[test]
@@ -169,11 +207,12 @@ fn sweeping_every_parameter_is_finite_and_click_free() {
             chain.process_block(block);
         }
         assert!(tone.iter().all(|sample| sample.is_finite()), "{}", spec.key);
-        let largest_step = tone
-            .windows(2)
-            .map(|pair| (pair[1] - pair[0]).abs())
-            .fold(0.0f32, f32::max);
-        assert!(largest_step < 0.1, "{} stepped by {largest_step}", spec.key);
+        assert!(
+            largest_step(&tone) < 0.1,
+            "{} stepped by {}",
+            spec.key,
+            largest_step(&tone)
+        );
     }
 }
 
@@ -192,9 +231,9 @@ fn toggling_bypass_crossfades_without_clicks() {
         }
         chain.process_block(block);
     }
-    let largest_step = tone
-        .windows(2)
-        .map(|pair| (pair[1] - pair[0]).abs())
-        .fold(0.0f32, f32::max);
-    assert!(largest_step < 0.1, "stepped by {largest_step}");
+    assert!(
+        largest_step(&tone) < 0.1,
+        "stepped by {}",
+        largest_step(&tone)
+    );
 }

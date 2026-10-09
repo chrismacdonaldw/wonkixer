@@ -8,7 +8,7 @@ use crate::params::{ParamId, ParamValues, StageId};
 #[serde(rename_all = "camelCase", default)]
 pub struct ParamDocument {
     pub values: BTreeMap<String, f32>,
-    pub bypassed: Vec<String>,
+    pub bypassed: BTreeMap<String, bool>,
 }
 
 impl From<&ParamValues> for ParamDocument {
@@ -19,8 +19,8 @@ impl From<&ParamValues> for ParamDocument {
                 .map(|(id, value)| (id.key().to_owned(), value))
                 .collect(),
             bypassed: values
-                .bypassed_stages()
-                .map(|stage| stage.key().to_owned())
+                .bypasses()
+                .map(|(stage, bypassed)| (stage.key().to_owned(), bypassed))
                 .collect(),
         }
     }
@@ -34,9 +34,9 @@ impl From<&ParamDocument> for ParamValues {
                 values.set(id, *value);
             }
         }
-        for key in &document.bypassed {
+        for (key, bypassed) in &document.bypassed {
             if let Some(stage) = StageId::from_key(key) {
-                values.set_bypassed(stage, true);
+                values.set_bypassed(stage, *bypassed);
             }
         }
         values
@@ -64,10 +64,12 @@ mod tests {
         let mut values = ParamValues::default();
         values.set(ParamId::CompressorRatio, 4.5);
         values.set_bypassed(StageId::Limiter, true);
+        values.set_bypassed(StageId::NoiseSuppressor, false);
 
         let json = serde_json::to_string(&values).expect("json");
         assert!(json.contains("\"compressor.ratio\":4.5"));
-        assert!(json.contains("\"bypassed\":[\"limiter\"]"));
+        assert!(json.contains("\"limiter\":true"));
+        assert!(json.contains("\"rnnoise\":false"));
 
         let parsed: ParamValues = serde_json::from_str(&json).expect("parse");
         assert_eq!(parsed, values);
@@ -76,7 +78,7 @@ mod tests {
     #[test]
     fn unknown_keys_are_ignored_and_missing_keys_take_defaults() {
         let parsed: ParamValues = serde_json::from_str(
-            r#"{"values":{"hpf.cutoff":120,"nope":1,"eq.lowMid.gain":-99},"bypassed":["ghost","eq"]}"#,
+            r#"{"values":{"hpf.cutoff":120,"nope":1,"eq.lowMid.gain":-99},"bypassed":{"ghost":true,"eq":true}}"#,
         )
         .expect("parse");
 
@@ -85,6 +87,7 @@ mod tests {
         assert_eq!(parsed.get(ParamId::CompressorRatio), 3.0);
         assert!(parsed.is_bypassed(StageId::Equalizer));
         assert!(!parsed.is_bypassed(StageId::Limiter));
+        assert!(parsed.is_bypassed(StageId::NoiseSuppressor));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use wonkixer_dsp::{Chain, GainReduction, ParamValues, Params};
+use wonkixer_dsp::{BlockReport, Chain, ParamValues, Params};
 
 pub struct Processor {
     params: Arc<Params>,
@@ -26,7 +26,7 @@ impl Processor {
         self.chain.latency_samples()
     }
 
-    pub fn process(&mut self, block: &mut [f32]) -> GainReduction {
+    pub fn process(&mut self, block: &mut [f32]) -> BlockReport {
         if self
             .params
             .load_if_changed(&mut self.seen_generation, &mut self.values)
@@ -88,9 +88,13 @@ mod tests {
     }
 
     #[test]
-    fn reports_the_limiter_lookahead_as_latency() {
+    fn latency_follows_the_optional_stages() {
         let params = Arc::new(Params::new(&ParamValues::default()));
-        let processor = Processor::new(params, RATE);
+        let mut processor = Processor::new(Arc::clone(&params), RATE);
         assert_eq!(processor.latency_samples(), 240);
+
+        params.set_bypassed(StageId::NoiseSuppressor, false);
+        processor.process(&mut tone());
+        assert_eq!(processor.latency_samples(), 720);
     }
 }

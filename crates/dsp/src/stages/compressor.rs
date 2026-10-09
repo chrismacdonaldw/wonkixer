@@ -2,7 +2,7 @@ use super::{LEVEL_SMOOTH_MS, Stage};
 use crate::dynamics::{GainSmoother, compressor_reduction};
 use crate::params::{ParamId, ParamValues};
 use crate::smoother::Smoother;
-use crate::units::{db_to_gain, gain_to_db};
+use crate::units::{MIN_DB, db_to_gain, gain_to_db};
 
 pub struct Compressor {
     sample_rate: f32,
@@ -12,6 +12,7 @@ pub struct Compressor {
     makeup: Smoother,
     smoother: GainSmoother,
     reduction: f32,
+    level_db: f32,
 }
 
 impl Compressor {
@@ -33,6 +34,7 @@ impl Compressor {
                 sample_rate,
             ),
             reduction: 0.0,
+            level_db: MIN_DB,
         }
     }
 }
@@ -53,8 +55,9 @@ impl Stage for Compressor {
     }
 
     fn process(&mut self, sample: f32) -> f32 {
+        self.level_db = gain_to_db(sample.abs());
         let desired = compressor_reduction(
-            gain_to_db(sample.abs()),
+            self.level_db,
             self.threshold.advance(),
             self.ratio.advance(),
             self.knee.advance(),
@@ -67,8 +70,13 @@ impl Stage for Compressor {
         self.reduction
     }
 
+    fn detector_db(&self) -> f32 {
+        self.level_db
+    }
+
     fn reset(&mut self) {
         self.smoother.reset();
         self.reduction = 0.0;
+        self.level_db = MIN_DB;
     }
 }
