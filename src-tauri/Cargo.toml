@@ -14,3 +14,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+cpal = "0.18"
+ringbuf = "0.5"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync"] }
+assert_no_alloc = "1"

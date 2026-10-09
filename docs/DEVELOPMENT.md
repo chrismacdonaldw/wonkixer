@@ -31,13 +31,23 @@ Frontend tests run with Node's test runner, `tsx` and a JSDOM built from the
 real `index.html`, importing TypeScript modules directly. Rust tests live next
 to the code they cover.
 
+One Rust test opens real audio devices (the default input and the first
+"CABLE Input" output, or the default output when no cable exists), runs for a
+few seconds and asserts there were no dropouts. It is skipped unless opted in:
+
+```powershell
+$env:WONKIXER_AUDIO_TESTS = "1"; cargo test -p wonkixer passes_audio
+```
+
 ## Layout
 
 - `src/`: TypeScript frontend. `main.ts` only bootstraps; each module owns one
   concern and takes its dependencies as arguments so tests can pass fakes.
 - `crates/dsp/`: the signal chain as a pure library with no Tauri dependency.
   Most DSP iteration happens here with `cargo test -p wonkixer-dsp`.
-- `src-tauri/`: the Tauri shell, audio engine thread and commands.
+- `src-tauri/`: the Tauri shell, audio engine thread and commands. The engine
+  thread owns the audio streams; commands reach it over a channel and it
+  publishes `engine:state` and `engine:meters` events back to the window.
 - `tests/`: frontend tests, discovered by glob.
 
 ## Conventions

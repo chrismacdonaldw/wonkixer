@@ -13,7 +13,9 @@ See [PLAN.md](PLAN.md) for the architecture and roadmap and
 
 ## Status
 
-Milestone 0: application shell. The engine and signal chain are not wired yet.
+Milestone 1: live passthrough. The engine routes a microphone to any output
+device with level meters, latency and dropout readouts. The signal chain is not
+wired yet.
 
 ## Requirements
 
