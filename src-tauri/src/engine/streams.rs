@@ -35,7 +35,7 @@ pub fn open(
         .build_input_stream(
             input_config.config(),
             input_callback(producer, input_config.channels(), Arc::clone(&meters)),
-            failure_callback(on_failure.clone()),
+            error_callback(Arc::clone(&meters), on_failure.clone()),
             None,
         )
         .map_err(|error| format!("Could not open the input device: {error}"))?;
@@ -46,9 +46,9 @@ pub fn open(
                 Outlet::new(consumer, sample_rate),
                 output_config.channels(),
                 sample_rate,
-                meters,
+                Arc::clone(&meters),
             ),
-            failure_callback(on_failure),
+            error_callback(meters, on_failure),
             None,
         )
         .map_err(|error| format!("Could not open the output device: {error}"))?;
@@ -87,10 +87,30 @@ fn negotiated(
     Ok(config)
 }
 
-fn failure_callback(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fault {
+    Glitch,
+    Ignorable,
+    Fatal,
+}
+
+fn fault(kind: cpal::ErrorKind) -> Fault {
+    match kind {
+        cpal::ErrorKind::Xrun => Fault::Glitch,
+        cpal::ErrorKind::DeviceChanged => Fault::Ignorable,
+        _ => Fault::Fatal,
+    }
+}
+
+fn error_callback(
+    meters: Arc<MeterStore>,
     on_failure: impl Fn(String) + Send + 'static,
 ) -> impl FnMut(cpal::Error) + Send + 'static {
-    move |error| on_failure(error.to_string())
+    move |error| match fault(error.kind()) {
+        Fault::Glitch => meters.record_dropout(),
+        Fault::Ignorable => {}
+        Fault::Fatal => on_failure(error.to_string()),
+    }
 }
 
 fn input_callback(
@@ -155,6 +175,31 @@ mod tests {
     const OPT_IN: &str = "WONKIXER_AUDIO_TESTS";
     const CABLE_PREFIX: &str = "CABLE Input";
 
+    fn failure_log() -> (
+        Arc<Mutex<Vec<String>>>,
+        impl Fn(String) + Clone + Send + 'static,
+    ) {
+        let failures = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&failures);
+        (failures, move |message| {
+            sink.lock().expect("failure log").push(message);
+        })
+    }
+
+    #[test]
+    fn glitches_count_as_dropouts_instead_of_stopping_the_engine() {
+        let meters = Arc::new(MeterStore::default());
+        let (failures, on_failure) = failure_log();
+        let mut callback = error_callback(Arc::clone(&meters), on_failure);
+
+        callback(cpal::Error::new(cpal::ErrorKind::Xrun));
+        callback(cpal::Error::new(cpal::ErrorKind::DeviceChanged));
+        callback(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
+
+        assert_eq!(meters.snapshot(48_000).dropouts, 1);
+        assert_eq!(failures.lock().expect("failure log").len(), 1);
+    }
+
     #[test]
     fn passes_audio_between_real_devices_without_dropouts() {
         if std::env::var_os(OPT_IN).is_none() {
@@ -172,13 +217,10 @@ mod tests {
             .or_else(|| host.default_output_device())
             .expect("an output device");
         let meters = Arc::new(MeterStore::default());
-        let failures = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&failures);
+        let (failures, on_failure) = failure_log();
 
-        let (_streams, sample_rate) = open(&input, &output, Arc::clone(&meters), move |message| {
-            sink.lock().expect("failure log").push(message);
-        })
-        .expect("streams to open");
+        let (_streams, sample_rate) =
+            open(&input, &output, Arc::clone(&meters), on_failure).expect("streams to open");
         std::thread::sleep(Duration::from_secs(3));
         let frame = meters.snapshot(sample_rate);
 
