@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "publisher": "chrismacdonaldw",
     "copyright": "Copyright (c) 2026 chrismacdonaldw",
     "homepage": "https://github.com/chrismacdonaldw/wonkixer",
@@ -45,6 +46,17 @@
         "installMode": "currentUser",
         "languages": ["English"],
         "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzNEE3RUQ5RTdCRjVGN0UKUldSK1g3L24yWDVLRXliVU5FOVhxeUovR0hGOXZQbWN6Nk8zSnlqejl1bnpLWk5Pd3h6bnVWSjYK",
+      "endpoints": [
+        "https://github.com/chrismacdonaldw/wonkixer/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }
