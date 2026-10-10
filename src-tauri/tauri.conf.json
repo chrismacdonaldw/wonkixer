@@ -21,7 +21,7 @@
         "center": true,
         "decorations": false,
         "shadow": true,
-        "backgroundColor": "#0c0b09"
+        "backgroundColor": "#0b0c0e"
       }
     ],
     "security": {
@@ -31,12 +31,35 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
+    "publisher": "chrismacdonaldw",
+    "copyright": "Copyright (c) 2026 chrismacdonaldw",
+    "homepage": "https://github.com/chrismacdonaldw/wonkixer",
+    "shortDescription": "Live microphone processing for Windows",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzNEE3RUQ5RTdCRjVGN0UKUldSK1g3L24yWDVLRXliVU5FOVhxeUovR0hGOXZQbWN6Nk8zSnlqejl1bnpLWk5Pd3h6bnVWSjYK",
+      "endpoints": [
+        "https://github.com/chrismacdonaldw/wonkixer/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -13,3 +13,4 @@ src-tauri/gen/schemas
 *.key
 *.key.password
 docs/samples
+.claude/
