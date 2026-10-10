@@ -8,12 +8,21 @@ use super::capture::{self, Sink, Tap};
 use super::clock::{CaptureClock, Ticker};
 use super::devices::Direction;
 use super::meters::MeterStore;
+use super::output::{Output, OutputStream, negotiated};
 use super::processor::Processor;
 use super::transport::{self, Inlet, Outlet, Pull};
+use super::wasapi;
 
 pub struct Streams {
     _input: cpal::Stream,
-    _output: cpal::Stream,
+    _output: OutputStream,
+}
+
+impl Streams {
+    #[cfg(test)]
+    fn low_latency(&self) -> bool {
+        matches!(self._output, OutputStream::LowLatency { .. })
+    }
 }
 
 pub struct Opened {
@@ -58,8 +67,8 @@ pub fn open(
     on_failure: impl Fn(StreamFailure) + Clone + Send + 'static,
 ) -> Result<Opened, String> {
     let input_config = negotiated(input.default_input_config(), "input")?;
-    let output_config = negotiated(output.default_output_config(), "output")?;
-    let sample_rate = output_config.sample_rate();
+    let output = Output::prepare(output)?;
+    let sample_rate = output.sample_rate();
     let (producer, consumer) = transport::ring(sample_rate);
     let inlet = Inlet::new(producer, input_config.sample_rate(), sample_rate)?;
     let (tap, capture) = capture::tap(sample_rate);
@@ -81,29 +90,23 @@ pub fn open(
             None,
         )
         .map_err(|error| format!("Could not open the input device: {error}"))?;
-    let output_stream = output
-        .build_output_stream(
-            output_config.config(),
-            output_callback(
-                Outlet::new(consumer, sample_rate, period(&output_config)),
-                processor,
-                output_config.channels(),
-                sample_rate,
-                clock,
-                Arc::clone(&meters),
-                tap,
-            ),
-            error_callback(Direction::Output, meters, on_failure),
-            None,
-        )
-        .map_err(|error| format!("Could not open the output device: {error}"))?;
+    let render = output_callback(
+        Outlet::new(consumer, sample_rate, output.burst()),
+        processor,
+        output.channels(),
+        sample_rate,
+        clock,
+        Arc::clone(&meters),
+        tap,
+    );
+    let output_stream = output.start(
+        render,
+        error_callback(Direction::Output, meters, on_failure),
+    )?;
 
     input_stream
         .play()
         .map_err(|error| format!("Could not start the input device: {error}"))?;
-    output_stream
-        .play()
-        .map_err(|error| format!("Could not start the output device: {error}"))?;
 
     Ok(Opened {
         streams: Streams {
@@ -113,31 +116,6 @@ pub fn open(
         sample_rate,
         capture,
     })
-}
-
-fn period(config: &cpal::SupportedStreamConfig) -> usize {
-    match *config.buffer_size() {
-        cpal::SupportedBufferSize::Range { min, .. } => min as usize,
-        cpal::SupportedBufferSize::Unknown => (config.sample_rate() / 100) as usize,
-    }
-}
-
-fn negotiated(
-    config: Result<cpal::SupportedStreamConfig, cpal::Error>,
-    role: &str,
-) -> Result<cpal::SupportedStreamConfig, String> {
-    let config =
-        config.map_err(|error| format!("Could not read the {role} device format: {error}"))?;
-    if config.sample_format() != cpal::SampleFormat::F32 {
-        return Err(format!(
-            "The {role} device uses {} samples, which is not supported yet.",
-            config.sample_format()
-        ));
-    }
-    if config.channels() == 0 {
-        return Err(format!("The {role} device reports no audio channels."));
-    }
-    Ok(config)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,7 +156,13 @@ fn input_callback(
 ) -> impl FnMut(&[f32], &cpal::InputCallbackInfo) + Send + 'static {
     let channels = usize::from(channels);
     let scale = 1.0 / channels as f32;
+    let mut pre_roll = true;
     move |data, info| {
+        if pre_roll {
+            wasapi::promote_current_thread();
+            pre_roll = false;
+            return;
+        }
         assert_no_alloc(|| {
             let first = inlet.pushed();
             let mut peak = 0.0f32;
@@ -206,12 +190,12 @@ fn output_callback(
     clock: Arc<CaptureClock>,
     meters: Arc<MeterStore>,
     mut tap: Tap,
-) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
+) -> impl FnMut(&mut [f32], u128) + Send + 'static {
     let channels = usize::from(channels);
     let ticker = Ticker::new();
     let mut mono = vec![0.0f32; sample_rate as usize];
     let mut warmed_up = false;
-    move |data, info| {
+    move |data, playback| {
         assert_no_alloc(|| {
             if !warmed_up {
                 permit_alloc(|| processor.warm_up());
@@ -225,7 +209,6 @@ fn output_callback(
                 Pull::Underrun => meters.record_dropout(),
                 Pull::Ready => {
                     meters.mark_flowing();
-                    let playback = info.timestamp().playback.as_nanos();
                     if let Some(delay) = clock.delay(head, playback) {
                         meters.record_transport_delay(delay);
                     }
@@ -260,7 +243,8 @@ mod tests {
     const SOAK: &str = "WONKIXER_SOAK_SECONDS";
     const MIN_SOAK_SECONDS: u64 = 10;
     const SETTLE_SECONDS: u64 = 1;
-    const LATENCY_BOUND_MS: f32 = 80.0;
+    const LOW_LATENCY_BOUND_MS: f32 = 45.0;
+    const SHARED_BOUND_MS: f32 = 80.0;
 
     fn failure_log() -> (
         Arc<Mutex<Vec<StreamFailure>>>,
@@ -371,6 +355,7 @@ mod tests {
         let opened = open(&input, &output, Arc::clone(&meters), params, on_failure)
             .expect("streams to open");
         let sample_rate = opened.sample_rate;
+        let low_latency = opened.streams.low_latency();
         let mut worst = 0.0f32;
         for second in 1..=seconds {
             std::thread::sleep(Duration::from_secs(1));
@@ -385,14 +370,24 @@ mod tests {
         }
         let frame = meters.snapshot(sample_rate);
         eprintln!(
-            "{} -> {}: worst {worst:.1} ms after settling, {} dropouts in {seconds} s",
+            "{} -> {} ({}): worst {worst:.1} ms after settling, {} dropouts in {seconds} s",
             devices::display_name(&input).unwrap_or_default(),
             devices::display_name(&output).unwrap_or_default(),
+            if low_latency {
+                "low-latency output"
+            } else {
+                "shared output"
+            },
             frame.dropouts
         );
 
         assert!(failures.lock().expect("failure log").is_empty());
         assert_eq!(frame.dropouts, 0);
-        assert!(worst > 0.0 && worst < LATENCY_BOUND_MS, "{worst} ms");
+        let bound = if low_latency {
+            LOW_LATENCY_BOUND_MS
+        } else {
+            SHARED_BOUND_MS
+        };
+        assert!(worst > 0.0 && worst < bound, "{worst} ms");
     }
 }

@@ -2,11 +2,13 @@ mod capture;
 mod clock;
 pub mod devices;
 mod meters;
+mod output;
 mod processor;
 mod resampler;
 mod streams;
 mod supervisor;
 mod transport;
+mod wasapi;
 mod worker;
 
 use std::sync::mpsc::{self, Sender};

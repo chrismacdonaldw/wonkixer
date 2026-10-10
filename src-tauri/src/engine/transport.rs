@@ -82,7 +82,7 @@ pub struct Timing {
 
 pub struct Outlet {
     consumer: HeapCons<f32>,
-    period: usize,
+    burst: usize,
     margin: usize,
     deadband: usize,
     lag: f32,
@@ -91,10 +91,10 @@ pub struct Outlet {
 }
 
 impl Outlet {
-    pub fn new(consumer: HeapCons<f32>, sample_rate: u32, period: usize) -> Self {
+    pub fn new(consumer: HeapCons<f32>, sample_rate: u32, burst: usize) -> Self {
         Self {
             consumer,
-            period,
+            burst,
             margin: (sample_rate * MARGIN_MS / 1000) as usize,
             deadband: (sample_rate * DEADBAND_MS / 1000) as usize,
             lag: 0.0,
@@ -112,14 +112,14 @@ impl Outlet {
     }
 
     pub fn target(&self, block: usize, packet: usize) -> usize {
-        packet + block.max(self.period) + self.margin
+        packet + block.max(self.burst) + self.margin
     }
 
     pub fn pull(&mut self, block: &mut [f32], timing: Option<Timing>) -> Pull {
         let mut fill = self.fill();
         let Timing { mut lag, packet } = self.trusted(timing).unwrap_or(Timing {
             lag: fill,
-            packet: self.period,
+            packet: self.burst,
         });
         let target = self.target(block.len(), packet);
 
@@ -142,6 +142,7 @@ impl Outlet {
             return Pull::Underrun;
         }
 
+        self.burst = self.burst.max(block.len());
         self.lag += (lag as f32 - self.lag) * SMOOTHING;
         let taken = if self.lag > (target + self.deadband) as f32 && fill > block.len() {
             self.lag -= 1.0;
@@ -238,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_first_block_raises_the_target_for_that_block_only() {
+    fn an_oversized_block_while_priming_raises_the_target_for_that_block_only() {
         let (_producer, mut outlet) = outlet_with(2 * PERIOD);
         let mut first = [1.0; 2 * PERIOD];
         let mut block = [1.0; PERIOD];
@@ -246,10 +247,20 @@ mod tests {
         assert_eq!(outlet.pull(&mut first, timing(TARGET)), Pull::Priming);
         assert_eq!(outlet.target(2 * PERIOD, PERIOD), 3 * PERIOD + MARGIN);
         assert_eq!(outlet.pull(&mut block, timing(TARGET)), Pull::Ready);
+        assert_eq!(outlet.target(PERIOD, PERIOD), TARGET);
     }
 
     #[test]
-    fn a_short_block_still_leaves_room_for_a_whole_period() {
+    fn an_oversized_block_while_running_raises_the_target_for_good() {
+        let (_producer, mut outlet) = running_outlet_with(4 * PERIOD, TARGET);
+        let mut late = [1.0; 2 * PERIOD];
+
+        assert_eq!(outlet.pull(&mut late, timing(TARGET + PERIOD)), Pull::Ready);
+        assert_eq!(outlet.target(PERIOD, PERIOD), TARGET + PERIOD);
+    }
+
+    #[test]
+    fn a_short_block_still_leaves_room_for_the_expected_burst() {
         let (_producer, outlet) = outlet_with(0);
 
         assert_eq!(outlet.target(128, PERIOD), TARGET);
