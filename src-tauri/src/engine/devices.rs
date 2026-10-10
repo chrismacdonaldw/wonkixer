@@ -24,6 +24,15 @@ pub enum Direction {
     Output,
 }
 
+impl Direction {
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Input => "input device",
+            Self::Output => "output device",
+        }
+    }
+}
+
 pub fn enumerate(host: &cpal::Host) -> Result<AudioDevices, String> {
     Ok(AudioDevices {
         inputs: describe_all(
@@ -45,6 +54,10 @@ pub fn find(host: &cpal::Host, id: &str) -> Result<cpal::Device, String> {
         .map_err(|_| format!("Unrecognised audio device id: {id}"))?;
     host.device_by_id(&device_id)
         .ok_or_else(|| format!("The audio device is no longer available: {id}"))
+}
+
+pub fn is_connected(host: &cpal::Host, id: &str) -> bool {
+    find(host, id).is_ok()
 }
 
 pub fn display_name(device: &cpal::Device) -> Result<String, String> {

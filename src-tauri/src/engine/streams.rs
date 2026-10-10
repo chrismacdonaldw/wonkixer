@@ -7,6 +7,7 @@ use ringbuf::traits::Producer;
 use wonkixer_dsp::Params;
 
 use super::capture::{self, Sink, Tap};
+use super::devices::Direction;
 use super::meters::MeterStore;
 use super::processor::Processor;
 use super::transport::{self, Outlet, Pull};
@@ -22,12 +23,40 @@ pub struct Opened {
     pub capture: Sink,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cause {
+    Disconnected,
+    ServiceStopped,
+    Reset,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamFailure {
+    pub direction: Direction,
+    pub cause: Cause,
+}
+
+impl StreamFailure {
+    pub fn describe(&self, device: &str) -> String {
+        let role = self.direction.noun();
+        match &self.cause {
+            Cause::Disconnected => format!("The {role} \"{device}\" was disconnected."),
+            Cause::ServiceStopped => "The Windows audio service stopped.".to_owned(),
+            Cause::Reset => format!(
+                "Windows reset the {role} \"{device}\", usually because its format changed in Sound settings."
+            ),
+            Cause::Failed(detail) => format!("The {role} \"{device}\" stopped: {detail}"),
+        }
+    }
+}
+
 pub fn open(
     input: &cpal::Device,
     output: &cpal::Device,
     meters: Arc<MeterStore>,
     params: Arc<Params>,
-    on_failure: impl Fn(String) + Clone + Send + 'static,
+    on_failure: impl Fn(StreamFailure) + Clone + Send + 'static,
 ) -> Result<Opened, String> {
     let input_config = negotiated(input.default_input_config(), "input")?;
     let output_config = negotiated(output.default_output_config(), "output")?;
@@ -48,7 +77,7 @@ pub fn open(
         .build_input_stream(
             input_config.config(),
             input_callback(producer, input_config.channels(), Arc::clone(&meters)),
-            error_callback(Arc::clone(&meters), on_failure.clone()),
+            error_callback(Direction::Input, Arc::clone(&meters), on_failure.clone()),
             None,
         )
         .map_err(|error| format!("Could not open the input device: {error}"))?;
@@ -63,7 +92,7 @@ pub fn open(
                 Arc::clone(&meters),
                 tap,
             ),
-            error_callback(meters, on_failure),
+            error_callback(Direction::Output, meters, on_failure),
             None,
         )
         .map_err(|error| format!("Could not open the output device: {error}"))?;
@@ -103,29 +132,33 @@ fn negotiated(
     Ok(config)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Fault {
     Glitch,
     Ignorable,
-    Fatal,
+    Fatal(Cause),
 }
 
-fn fault(kind: cpal::ErrorKind) -> Fault {
-    match kind {
+fn fault(error: &cpal::Error) -> Fault {
+    match error.kind() {
         cpal::ErrorKind::Xrun => Fault::Glitch,
-        cpal::ErrorKind::DeviceChanged => Fault::Ignorable,
-        _ => Fault::Fatal,
+        cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied => Fault::Ignorable,
+        cpal::ErrorKind::DeviceNotAvailable => Fault::Fatal(Cause::Disconnected),
+        cpal::ErrorKind::HostUnavailable => Fault::Fatal(Cause::ServiceStopped),
+        cpal::ErrorKind::StreamInvalidated => Fault::Fatal(Cause::Reset),
+        _ => Fault::Fatal(Cause::Failed(error.to_string())),
     }
 }
 
 fn error_callback(
+    direction: Direction,
     meters: Arc<MeterStore>,
-    on_failure: impl Fn(String) + Send + 'static,
+    on_failure: impl Fn(StreamFailure) + Send + 'static,
 ) -> impl FnMut(cpal::Error) + Send + 'static {
-    move |error| match fault(error.kind()) {
+    move |error| match fault(&error) {
         Fault::Glitch => meters.record_dropout(),
         Fault::Ignorable => {}
-        Fault::Fatal => on_failure(error.to_string()),
+        Fault::Fatal(cause) => on_failure(StreamFailure { direction, cause }),
     }
 }
 
@@ -203,13 +236,13 @@ mod tests {
     const CABLE_PREFIX: &str = "CABLE Input";
 
     fn failure_log() -> (
-        Arc<Mutex<Vec<String>>>,
-        impl Fn(String) + Clone + Send + 'static,
+        Arc<Mutex<Vec<StreamFailure>>>,
+        impl Fn(StreamFailure) + Clone + Send + 'static,
     ) {
         let failures = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&failures);
-        (failures, move |message| {
-            sink.lock().expect("failure log").push(message);
+        (failures, move |failure| {
+            sink.lock().expect("failure log").push(failure);
         })
     }
 
@@ -217,14 +250,56 @@ mod tests {
     fn glitches_count_as_dropouts_instead_of_stopping_the_engine() {
         let meters = Arc::new(MeterStore::default());
         let (failures, on_failure) = failure_log();
-        let mut callback = error_callback(Arc::clone(&meters), on_failure);
+        let mut callback = error_callback(Direction::Input, Arc::clone(&meters), on_failure);
 
         callback(cpal::Error::new(cpal::ErrorKind::Xrun));
         callback(cpal::Error::new(cpal::ErrorKind::DeviceChanged));
+        callback(cpal::Error::new(cpal::ErrorKind::RealtimeDenied));
         callback(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
 
         assert_eq!(meters.snapshot(48_000).dropouts, 1);
-        assert_eq!(failures.lock().expect("failure log").len(), 1);
+        assert_eq!(
+            *failures.lock().expect("failure log"),
+            vec![StreamFailure {
+                direction: Direction::Input,
+                cause: Cause::Disconnected,
+            }]
+        );
+    }
+
+    #[test]
+    fn fatal_errors_are_classified_by_what_happened_to_the_device() {
+        let cause = |kind| match fault(&cpal::Error::new(kind)) {
+            Fault::Fatal(cause) => cause,
+            other => panic!("{kind:?} should be fatal, got {other:?}"),
+        };
+
+        assert_eq!(
+            cause(cpal::ErrorKind::DeviceNotAvailable),
+            Cause::Disconnected
+        );
+        assert_eq!(
+            cause(cpal::ErrorKind::HostUnavailable),
+            Cause::ServiceStopped
+        );
+        assert_eq!(cause(cpal::ErrorKind::StreamInvalidated), Cause::Reset);
+        assert!(matches!(
+            cause(cpal::ErrorKind::BackendError),
+            Cause::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn a_lost_device_is_described_in_plain_words() {
+        let lost = StreamFailure {
+            direction: Direction::Input,
+            cause: Cause::Disconnected,
+        };
+
+        assert_eq!(
+            lost.describe("Microphone (HyperX Cloud Alpha Wireless)"),
+            "The input device \"Microphone (HyperX Cloud Alpha Wireless)\" was disconnected."
+        );
     }
 
     #[test]

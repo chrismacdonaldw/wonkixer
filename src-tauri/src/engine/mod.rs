@@ -3,6 +3,7 @@ pub mod devices;
 mod meters;
 mod processor;
 mod streams;
+mod supervisor;
 mod transport;
 mod worker;
 
@@ -15,6 +16,7 @@ use tokio::sync::oneshot;
 use wonkixer_dsp::analysis::Take;
 use wonkixer_dsp::{ParamValues, Params};
 
+use supervisor::Route;
 use worker::Command;
 pub use worker::EngineState;
 
@@ -50,8 +52,10 @@ impl Engine {
     pub async fn start(&self, input_id: String, output_id: String) -> Result<EngineState, String> {
         let (reply, response) = oneshot::channel();
         self.send(Command::Start {
-            input_id,
-            output_id,
+            route: Route {
+                input_id,
+                output_id,
+            },
             reply,
         })?;
         response.await.map_err(|_| ENGINE_UNAVAILABLE.to_owned())?
@@ -66,6 +70,12 @@ impl Engine {
     pub async fn state(&self) -> Result<EngineState, String> {
         let (reply, response) = oneshot::channel();
         self.send(Command::State { reply })?;
+        response.await.map_err(|_| ENGINE_UNAVAILABLE.to_owned())
+    }
+
+    pub async fn set_supervision(&self, enabled: bool) -> Result<EngineState, String> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::Supervise { enabled, reply })?;
         response.await.map_err(|_| ENGINE_UNAVAILABLE.to_owned())
     }
 

@@ -2,19 +2,20 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 use wonkixer_dsp::Params;
 use wonkixer_dsp::analysis::Take;
 
 use super::capture::Sink;
-use super::devices;
+use super::devices::{self, Direction};
 use super::meters::MeterStore;
-use super::streams::{self, Streams};
+use super::streams::{self, StreamFailure, Streams};
+use super::supervisor::{Route, Supervisor};
 
+pub const STATE_EVENT: &str = "engine:state";
 const METER_INTERVAL: Duration = Duration::from_millis(33);
-const STATE_EVENT: &str = "engine:state";
 const METERS_EVENT: &str = "engine:meters";
 const ENGINE_STOPPED: &str = "Start the engine before recording a take.";
 
@@ -25,14 +26,17 @@ pub type TakeReply = oneshot::Sender<Result<Take, String>>;
 
 pub enum Command {
     Start {
-        input_id: String,
-        output_id: String,
+        route: Route,
         reply: StartReply,
     },
     Stop {
         reply: StateReply,
     },
     State {
+        reply: StateReply,
+    },
+    Supervise {
+        enabled: bool,
         reply: StateReply,
     },
     BeginCapture {
@@ -44,12 +48,12 @@ pub enum Command {
     },
     StreamFailed {
         generation: u64,
-        message: String,
+        failure: StreamFailure,
     },
     Shutdown,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineState {
     pub running: bool,
@@ -57,9 +61,19 @@ pub struct EngineState {
     pub output: Option<Endpoint>,
     pub sample_rate: Option<u32>,
     pub error: Option<String>,
+    pub waiting_for_devices: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+impl EngineState {
+    fn failed(message: String) -> Self {
+        Self {
+            error: Some(message),
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Endpoint {
     pub id: String,
@@ -75,18 +89,18 @@ pub fn run(
     let mut worker = Worker::new(app, failures, params);
     loop {
         match inbox.recv_timeout(METER_INTERVAL) {
-            Ok(Command::Start {
-                input_id,
-                output_id,
-                reply,
-            }) => {
-                reply.send(worker.start(&input_id, &output_id)).ok();
+            Ok(Command::Start { route, reply }) => {
+                reply.send(worker.start(route)).ok();
             }
             Ok(Command::Stop { reply }) => {
                 worker.stop();
                 reply.send(worker.state.clone()).ok();
             }
             Ok(Command::State { reply }) => {
+                reply.send(worker.state.clone()).ok();
+            }
+            Ok(Command::Supervise { enabled, reply }) => {
+                worker.supervise(enabled);
                 reply.send(worker.state.clone()).ok();
             }
             Ok(Command::BeginCapture {
@@ -100,10 +114,10 @@ pub fn run(
             }
             Ok(Command::StreamFailed {
                 generation,
-                message,
-            }) => worker.fail(generation, message),
+                failure,
+            }) => worker.fail(generation, failure),
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => worker.recover(),
         }
         worker.drain_capture();
         worker.publish_meters();
@@ -112,9 +126,43 @@ pub fn run(
 
 struct Live {
     _streams: Streams,
+    input: Endpoint,
+    output: Endpoint,
     sample_rate: u32,
     generation: u64,
     capture: Sink,
+}
+
+impl Live {
+    fn endpoint(&self, direction: Direction) -> &Endpoint {
+        match direction {
+            Direction::Input => &self.input,
+            Direction::Output => &self.output,
+        }
+    }
+}
+
+struct OpenFailure {
+    message: String,
+    device_missing: bool,
+}
+
+impl OpenFailure {
+    fn missing(direction: Direction) -> Self {
+        Self {
+            message: format!("The {} is not connected.", direction.noun()),
+            device_missing: true,
+        }
+    }
+}
+
+impl From<String> for OpenFailure {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            device_missing: false,
+        }
+    }
 }
 
 struct Worker {
@@ -126,6 +174,7 @@ struct Worker {
     live: Option<Live>,
     state: EngineState,
     generation: u64,
+    supervisor: Supervisor,
 }
 
 impl Worker {
@@ -139,35 +188,54 @@ impl Worker {
             live: None,
             state: EngineState::default(),
             generation: 0,
+            supervisor: Supervisor::default(),
         }
     }
 
-    fn start(&mut self, input_id: &str, output_id: &str) -> Result<EngineState, String> {
+    fn start(&mut self, route: Route) -> Result<EngineState, String> {
         self.live = None;
-        match self.open(input_id, output_id) {
+        match self.open(&route) {
             Ok(state) => {
+                self.supervisor.remember(route);
                 self.transition(state);
                 Ok(self.state.clone())
             }
-            Err(message) => {
-                self.transition(EngineState {
-                    error: Some(message.clone()),
-                    ..EngineState::default()
-                });
-                Err(message)
+            Err(failure) => {
+                if failure.device_missing {
+                    self.supervisor.remember(route);
+                } else {
+                    self.supervisor.forget();
+                }
+                self.transition(EngineState::failed(failure.message.clone()));
+                Err(failure.message)
             }
         }
     }
 
-    fn open(&mut self, input_id: &str, output_id: &str) -> Result<EngineState, String> {
-        let input = devices::find(&self.host, input_id)?;
-        let output = devices::find(&self.host, output_id)?;
+    fn recover(&mut self) {
+        let Some(route) = self.supervisor.tick(self.live.is_some()).cloned() else {
+            return;
+        };
+        let connected = devices::is_connected(&self.host, &route.input_id)
+            && devices::is_connected(&self.host, &route.output_id);
+        if !connected {
+            return;
+        }
+        let state = self
+            .open(&route)
+            .unwrap_or_else(|failure| EngineState::failed(failure.message));
+        self.transition(state);
+    }
+
+    fn open(&mut self, route: &Route) -> Result<EngineState, OpenFailure> {
+        let input = self.locate(&route.input_id, Direction::Input)?;
+        let output = self.locate(&route.output_id, Direction::Output)?;
         let input_endpoint = Endpoint {
-            id: input_id.to_owned(),
+            id: route.input_id.clone(),
             name: devices::display_name(&input)?,
         };
         let output_endpoint = Endpoint {
-            id: output_id.to_owned(),
+            id: route.output_id.clone(),
             name: devices::display_name(&output)?,
         };
 
@@ -180,48 +248,57 @@ impl Worker {
             &output,
             Arc::clone(&self.meters),
             Arc::clone(&self.params),
-            move |message| {
+            move |failure| {
                 failures
                     .send(Command::StreamFailed {
                         generation,
-                        message,
+                        failure,
                     })
                     .ok();
             },
         )?;
 
-        let sample_rate = opened.sample_rate;
+        let state = EngineState {
+            running: true,
+            input: Some(input_endpoint.clone()),
+            output: Some(output_endpoint.clone()),
+            sample_rate: Some(opened.sample_rate),
+            error: None,
+            waiting_for_devices: false,
+        };
         self.live = Some(Live {
             _streams: opened.streams,
-            sample_rate,
+            input: input_endpoint,
+            output: output_endpoint,
+            sample_rate: opened.sample_rate,
             generation,
             capture: opened.capture,
         });
-        Ok(EngineState {
-            running: true,
-            input: Some(input_endpoint),
-            output: Some(output_endpoint),
-            sample_rate: Some(sample_rate),
-            error: None,
-        })
+        Ok(state)
+    }
+
+    fn locate(&self, id: &str, direction: Direction) -> Result<cpal::Device, OpenFailure> {
+        devices::find(&self.host, id).map_err(|_| OpenFailure::missing(direction))
     }
 
     fn stop(&mut self) {
-        if self.live.take().is_some() {
-            self.transition(EngineState::default());
-        }
+        self.supervisor.forget();
+        self.live = None;
+        self.transition(EngineState::default());
     }
 
-    fn fail(&mut self, generation: u64, message: String) {
-        let current = self.live.as_ref().map(|live| live.generation);
-        if current != Some(generation) {
+    fn supervise(&mut self, enabled: bool) {
+        self.supervisor.set_enabled(enabled);
+        self.transition(self.state.clone());
+    }
+
+    fn fail(&mut self, generation: u64, failure: StreamFailure) {
+        let Some(live) = self.live.take_if(|live| live.generation == generation) else {
             return;
-        }
-        self.live = None;
-        self.transition(EngineState {
-            error: Some(message),
-            ..EngineState::default()
-        });
+        };
+        let message = failure.describe(&live.endpoint(failure.direction).name);
+        drop(live);
+        self.transition(EngineState::failed(message));
     }
 
     fn begin_capture(&mut self, limit_seconds: u32) -> Result<(), String> {
@@ -243,8 +320,14 @@ impl Worker {
     }
 
     fn transition(&mut self, state: EngineState) {
-        self.state = state;
-        self.app.emit(STATE_EVENT, &self.state).ok();
+        let state = EngineState {
+            waiting_for_devices: self.supervisor.is_waiting(self.live.is_some()),
+            ..state
+        };
+        if state != self.state {
+            self.state = state;
+            self.app.emit(STATE_EVENT, &self.state).ok();
+        }
     }
 
     fn publish_meters(&self) {

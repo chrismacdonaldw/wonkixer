@@ -42,6 +42,14 @@ pub async fn get_engine_state(engine: State<'_, Engine>) -> Result<EngineState, 
 }
 
 #[tauri::command]
+pub async fn set_engine_supervision(
+    enabled: bool,
+    engine: State<'_, Engine>,
+) -> Result<EngineState, String> {
+    engine.set_supervision(enabled).await
+}
+
+#[tauri::command]
 pub fn get_schema() -> Schema {
     params::schema()
 }

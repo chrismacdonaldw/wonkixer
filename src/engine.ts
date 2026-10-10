@@ -24,6 +24,7 @@ export interface EngineState {
   output: Endpoint | null;
   sampleRate: number | null;
   error: string | null;
+  waitingForDevices: boolean;
 }
 
 export interface MeterFrame {
@@ -166,6 +167,7 @@ export interface EngineApi {
   start(inputId: string, outputId: string): Promise<EngineState>;
   stop(): Promise<EngineState>;
   state(): Promise<EngineState>;
+  setSupervision(enabled: boolean): Promise<EngineState>;
   schema(): Promise<ChainSchema>;
   params(): Promise<ParamDocument>;
   setParam(id: string, value: number): Promise<void>;
@@ -190,7 +192,14 @@ export interface EngineApi {
   onMeters(handler: (frame: MeterFrame) => void): Promise<Unsubscribe>;
 }
 
-export const STOPPED: EngineState = { running: false, input: null, output: null, sampleRate: null, error: null };
+export const STOPPED: EngineState = {
+  running: false,
+  input: null,
+  output: null,
+  sampleRate: null,
+  error: null,
+  waitingForDevices: false,
+};
 
 export function createEngineApi(call: Call, subscribe: Subscribe): EngineApi {
   return {
@@ -198,6 +207,7 @@ export function createEngineApi(call: Call, subscribe: Subscribe): EngineApi {
     start: (inputId, outputId) => call<EngineState>("start_engine", { inputId, outputId }),
     stop: () => call<EngineState>("stop_engine"),
     state: () => call<EngineState>("get_engine_state"),
+    setSupervision: (enabled) => call<EngineState>("set_engine_supervision", { enabled }),
     schema: () => call<ChainSchema>("get_schema"),
     params: () => call<ParamDocument>("get_params"),
     setParam: (id, value) => call<void>("set_param", { id, value }),
