@@ -7,6 +7,8 @@ const CAPACITY_SECONDS: u32 = 1;
 const MARGIN_MS: u32 = 2;
 const DEADBAND_MS: u32 = 1;
 const SMOOTHING: f32 = 1.0 / 16.0;
+const HOLD_SECONDS: u32 = 10;
+const RAISE_LIMIT: usize = 2;
 
 pub fn ring(sample_rate: u32) -> (HeapProd<f32>, HeapCons<f32>) {
     HeapRb::<f32>::new((sample_rate * CAPACITY_SECONDS) as usize).split()
@@ -80,9 +82,43 @@ pub struct Timing {
     pub packet: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Allowance {
+    floor: usize,
+    held: usize,
+    until: u64,
+}
+
+impl Allowance {
+    fn new(floor: usize) -> Self {
+        Self {
+            floor,
+            held: floor,
+            until: 0,
+        }
+    }
+
+    fn get(&self) -> usize {
+        self.held
+    }
+
+    fn observe(&mut self, size: usize, now: u64, hold: u64) {
+        if self.floor == 0 {
+            self.floor = size;
+        }
+        let size = size.clamp(self.floor, RAISE_LIMIT * self.floor);
+        if size >= self.held || now >= self.until {
+            self.held = size;
+            self.until = now + hold;
+        }
+    }
+}
+
 pub struct Outlet {
     consumer: HeapCons<f32>,
-    burst: usize,
+    burst: Allowance,
+    packet: Allowance,
+    hold: u64,
     margin: usize,
     deadband: usize,
     lag: f32,
@@ -94,7 +130,9 @@ impl Outlet {
     pub fn new(consumer: HeapCons<f32>, sample_rate: u32, burst: usize) -> Self {
         Self {
             consumer,
-            burst,
+            burst: Allowance::new(burst),
+            packet: Allowance::new(0),
+            hold: u64::from(sample_rate * HOLD_SECONDS),
             margin: (sample_rate * MARGIN_MS / 1000) as usize,
             deadband: (sample_rate * DEADBAND_MS / 1000) as usize,
             lag: 0.0,
@@ -112,14 +150,18 @@ impl Outlet {
     }
 
     pub fn target(&self, block: usize, packet: usize) -> usize {
-        packet + block.max(self.burst) + self.margin
+        packet.max(self.packet.get()) + block.max(self.burst.get()) + self.margin
     }
 
     pub fn pull(&mut self, block: &mut [f32], timing: Option<Timing>) -> Pull {
         let mut fill = self.fill();
-        let Timing { mut lag, packet } = self.trusted(timing).unwrap_or(Timing {
+        let trusted = self.trusted(timing);
+        if let Some(timing) = trusted {
+            self.packet.observe(timing.packet, self.consumed, self.hold);
+        }
+        let Timing { mut lag, packet } = trusted.unwrap_or(Timing {
             lag: fill,
-            packet: self.burst,
+            packet: self.burst.get(),
         });
         let target = self.target(block.len(), packet);
 
@@ -142,7 +184,7 @@ impl Outlet {
             return Pull::Underrun;
         }
 
-        self.burst = self.burst.max(block.len());
+        self.burst.observe(block.len(), self.consumed, self.hold);
         self.lag += (lag as f32 - self.lag) * SMOOTHING;
         let taken = if self.lag > (target + self.deadband) as f32 && fill > block.len() {
             self.lag -= 1.0;
@@ -251,12 +293,60 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_block_while_running_raises_the_target_for_good() {
+    fn an_oversized_block_while_running_raises_the_target() {
         let (_producer, mut outlet) = running_outlet_with(4 * PERIOD, TARGET);
         let mut late = [1.0; 2 * PERIOD];
 
         assert_eq!(outlet.pull(&mut late, timing(TARGET + PERIOD)), Pull::Ready);
         assert_eq!(outlet.target(PERIOD, PERIOD), TARGET + PERIOD);
+    }
+
+    #[test]
+    fn a_larger_capture_packet_raises_the_target() {
+        let (_producer, mut outlet) = running_outlet_with(4 * PERIOD, TARGET);
+        let mut block = [1.0; PERIOD];
+        outlet.pull(&mut block, timing(TARGET));
+
+        let bigger = Some(Timing {
+            lag: TARGET + PERIOD,
+            packet: 2 * PERIOD,
+        });
+        assert_eq!(outlet.pull(&mut block, bigger), Pull::Ready);
+        assert_eq!(outlet.target(PERIOD, PERIOD), TARGET + PERIOD);
+    }
+
+    const HOLD: u64 = 10 * RATE as u64;
+
+    #[test]
+    fn an_allowance_rises_to_a_larger_size_but_only_to_twice_its_floor() {
+        let mut allowance = Allowance::new(PERIOD);
+        allowance.observe(PERIOD + 100, 0, HOLD);
+        assert_eq!(allowance.get(), PERIOD + 100);
+
+        allowance.observe(10 * PERIOD, 1, HOLD);
+        assert_eq!(allowance.get(), 2 * PERIOD);
+    }
+
+    #[test]
+    fn an_allowance_relaxes_once_the_larger_size_stops_recurring() {
+        let mut allowance = Allowance::new(PERIOD);
+        allowance.observe(2 * PERIOD, 0, HOLD);
+
+        allowance.observe(PERIOD, HOLD - 1, HOLD);
+        assert_eq!(allowance.get(), 2 * PERIOD);
+        allowance.observe(PERIOD, HOLD, HOLD);
+        assert_eq!(allowance.get(), PERIOD);
+    }
+
+    #[test]
+    fn an_allowance_without_a_floor_learns_it_from_the_first_size() {
+        let mut allowance = Allowance::new(0);
+        allowance.observe(PERIOD, 0, HOLD);
+        allowance.observe(PERIOD / 2, 1, HOLD);
+        assert_eq!(allowance.get(), PERIOD);
+
+        allowance.observe(5 * PERIOD, 2, HOLD);
+        assert_eq!(allowance.get(), 2 * PERIOD);
     }
 
     #[test]

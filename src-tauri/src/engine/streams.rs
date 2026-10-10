@@ -5,11 +5,11 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use wonkixer_dsp::Params;
 
 use super::capture::{self, Sink, Tap};
-use super::clock::{CaptureClock, Ticker};
+use super::clock::{CaptureClock, Settling, Ticker};
 use super::devices::Direction;
 use super::meters::MeterStore;
 use super::output::{Output, OutputMode, OutputStream, negotiated};
-use super::priority;
+use super::priority::Promotion;
 use super::processor::Processor;
 use super::transport::{self, Inlet, Outlet, Pull};
 
@@ -77,6 +77,7 @@ pub fn open(
             input_config.config(),
             input_callback(
                 inlet,
+                Settling::new(input_config.sample_rate()),
                 input_config.channels(),
                 Arc::clone(&clock),
                 Arc::clone(&meters),
@@ -146,20 +147,21 @@ fn error_callback(
 
 fn input_callback(
     mut inlet: Inlet,
+    mut settling: Settling,
     channels: u16,
     clock: Arc<CaptureClock>,
     meters: Arc<MeterStore>,
 ) -> impl FnMut(&[f32], &cpal::InputCallbackInfo) + Send + 'static {
     let channels = usize::from(channels);
     let scale = 1.0 / channels as f32;
-    let mut pre_roll = true;
+    let mut promotion = Promotion::default();
     move |data, info| {
-        if pre_roll {
-            priority::promote_current_thread();
-            pre_roll = false;
-            return;
-        }
+        promotion.once();
         assert_no_alloc(|| {
+            let captured = info.timestamp().capture.as_nanos();
+            if !settling.admit(captured, data.len() / channels) {
+                return;
+            }
             let first = inlet.pushed();
             let mut peak = 0.0f32;
             let mut overflowed = false;
@@ -172,7 +174,7 @@ fn input_callback(
                 meters.record_dropout();
             }
             let frames = inlet.chain_frames(data.len() / channels);
-            clock.mark(first, frames, info.timestamp().capture.as_nanos());
+            clock.mark(first, frames, captured);
             meters.record_input(peak, frames);
         })
     }

@@ -7,6 +7,8 @@ use super::transport::Timing;
 
 const NANOS_PER_SECOND: i128 = 1_000_000_000;
 const UNKNOWN: i64 = i64::MIN;
+const STEP_TOLERANCE_NS: u128 = 1_500_000;
+const SETTLE_LIMIT: u32 = 5;
 
 pub struct CaptureClock {
     sample_rate: i128,
@@ -26,7 +28,7 @@ impl CaptureClock {
     pub fn mark(&self, frame: u64, frames: usize, captured_ns: u128) {
         let origin = i128::try_from(captured_ns).unwrap_or(i128::MAX) - self.span(frame);
         let origin = i64::try_from(origin).unwrap_or(UNKNOWN);
-        self.packet.fetch_max(frames, Ordering::Relaxed);
+        self.packet.store(frames, Ordering::Relaxed);
         self.origin.store(origin, Ordering::Release);
     }
 
@@ -53,6 +55,39 @@ impl CaptureClock {
 
     fn span(&self, frames: u64) -> i128 {
         i128::from(frames) * NANOS_PER_SECOND / self.sample_rate
+    }
+}
+
+#[derive(Debug)]
+pub struct Settling {
+    sample_rate: u128,
+    expected: Option<u128>,
+    seen: u32,
+    settled: bool,
+}
+
+impl Settling {
+    pub fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate: u128::from(sample_rate).max(1),
+            expected: None,
+            seen: 0,
+            settled: false,
+        }
+    }
+
+    pub fn admit(&mut self, captured_ns: u128, frames: usize) -> bool {
+        if self.settled {
+            return true;
+        }
+        let in_step = self
+            .expected
+            .is_some_and(|expected| expected.abs_diff(captured_ns) <= STEP_TOLERANCE_NS);
+        self.seen += 1;
+        self.expected =
+            Some(captured_ns + frames as u128 * NANOS_PER_SECOND as u128 / self.sample_rate);
+        self.settled = in_step || self.seen > SETTLE_LIMIT;
+        self.settled
     }
 }
 
@@ -122,18 +157,64 @@ mod tests {
     }
 
     #[test]
-    fn timing_counts_the_lag_in_frames_and_keeps_the_largest_packet() {
+    fn timing_counts_the_lag_in_frames_and_reports_the_latest_packet() {
         let clock = CaptureClock::new(RATE);
-        clock.mark(0, 480, 10 * SECOND);
-        clock.mark(480, 240, 10 * SECOND + 10_000_000);
+        clock.mark(0, 960, 10 * SECOND);
+        clock.mark(960, 480, 10 * SECOND + 20_000_000);
 
         assert_eq!(
-            clock.timing(480, 10 * SECOND + 22_000_000),
+            clock.timing(960, 10 * SECOND + 32_000_000),
             Some(Timing {
                 lag: 576,
                 packet: 480,
             })
         );
+    }
+
+    const PACKET: usize = 480;
+    const PACKET_NS: u128 = 10_000_000;
+
+    #[test]
+    fn the_first_capture_packet_is_never_trusted() {
+        let mut settling = Settling::new(RATE);
+
+        assert!(!settling.admit(SECOND, PACKET));
+    }
+
+    #[test]
+    fn a_packet_out_of_step_with_the_one_before_is_dropped_too() {
+        let mut settling = Settling::new(RATE);
+        settling.admit(SECOND, PACKET);
+
+        assert!(!settling.admit(SECOND + PACKET_NS + 3_260_000, PACKET));
+        assert!(settling.admit(SECOND + 2 * PACKET_NS + 3_260_000, PACKET));
+    }
+
+    #[test]
+    fn packets_in_step_within_the_usual_jitter_are_admitted() {
+        let mut settling = Settling::new(RATE);
+        settling.admit(SECOND, PACKET);
+
+        assert!(settling.admit(SECOND + PACKET_NS + 740_000, PACKET));
+    }
+
+    #[test]
+    fn gives_up_waiting_for_steady_timestamps_after_a_few_packets() {
+        let mut settling = Settling::new(RATE);
+        let admitted: Vec<bool> = (0..7u128)
+            .map(|index| settling.admit(SECOND + index * 2 * PACKET_NS, PACKET))
+            .collect();
+
+        assert_eq!(admitted, [false, false, false, false, false, true, true]);
+    }
+
+    #[test]
+    fn once_settled_every_packet_is_admitted() {
+        let mut settling = Settling::new(RATE);
+        settling.admit(SECOND, PACKET);
+        settling.admit(SECOND + PACKET_NS, PACKET);
+
+        assert!(settling.admit(SECOND + 5 * PACKET_NS, PACKET));
     }
 
     #[test]
