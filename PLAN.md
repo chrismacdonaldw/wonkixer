@@ -506,6 +506,11 @@ Save path: slider `input` event → `set_param` immediately (engine) and
 Each milestone ends green on `npm test`, `cargo test --workspace`,
 `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --check`.
 
+_Status 2026-10-10: M0–M5 are in `main`. The stage UI from M3 was replaced by
+the Claude Design panel (see `docs/UI-CONTRACT.md`). Calibration was pulled
+forward as M6 because it is what makes the app useful without tuning by ear;
+robustness, quality upgrades and release follow as M7–M9._
+
 ### M0 — Foundations (½ day)
 - Install VB-Cable. In Windows Sound settings: set CABLE Input/Output to
   48 000 Hz 16-bit or 24-bit (both must match the mic), disable "audio
@@ -568,7 +573,24 @@ Each milestone ends green on `npm test`, `cargo test --workspace`,
 - TS tests for presets and cards.
 - **Done when**: switching presets is click-free and persisted; all tests green.
 
-### M6 — Robustness (1 day)
+### M6 — Calibrate (1–2 days)
+- Engine: a lock-free capture tap on the raw input (pre-chain) drained by the
+  worker thread; `begin_take` / `end_take` commands with a 60 s cap; takes
+  held per role (silence, speech, loud) in a session store.
+- `dsp::analysis`: frame peak statistics, activity detection against the
+  measured noise floor, pitch tracking (normalised autocorrelation at 8 kHz),
+  sibilance centre by sweeping the de-esser's own sidechain filter, a 24-band
+  third-octave spectrum against the long-term average speech spectrum.
+- `dsp::analysis::derive`: profile → every main-tier value plus the noise
+  suppression switch, with a plain-English note per stage; detail-tier values
+  untouched; `Tone` picks Neutral / Warm / Bright / Flat for the EQ only.
+- UI: a wizard page designed from `docs/CALIBRATE.md` (prompts, live input
+  level while recording, retake on clipping, tone choice, notes, Apply).
+- **Done when**: the user records three takes, applies the result, and the
+  live chain sounds right in Discord without touching a value; synthetic-voice
+  tests pin pitch, sibilance, noise floor and every derived value's range.
+
+### M7 — Robustness (1 day)
 - Device unplug → engine stops cleanly, state event, UI offers restart;
   re-plug or default-device change → auto-restart if `autoStartEngine`.
 - Tray icon + menu, close-to-tray, start minimised, single-instance,
@@ -580,22 +602,23 @@ Each milestone ends green on `npm test`, `cargo test --workspace`,
 - **Done when**: unplugging and replugging the headset during a call recovers
   without relaunching; app survives a Windows audio service restart.
 
-### M7 — Quality upgrades (optional, pick by ear)
+### M8 — Quality upgrades (optional, pick by ear)
 - True-peak limiting (4× oversampled detector) if inter-sample clips show up.
-- Optional RNNoise stage between HPF and expander, off by default, with a
-  latency badge (+10 ms) when enabled.
+- RNNoise landed early as the optional noise suppression stage (M5).
+- Audition loop: play a recorded take through the live chain instead of the
+  mic, so presets and tweaks are compared on identical material.
 - "Monitor" toggle: also send the processed signal to the headphones, with a
   warning that you will hear ~35 ms of your own voice delayed.
 - Spectrum strip under the EQ card (FFT in the engine thread from a meter
   ring, not in the callback).
 - Stage reordering by drag (the screenshot's handles), if ever wanted.
 
-### M8 — Release (½ day)
+### M9 — Release (½ day)
 - Icons, NSIS installer, updater key, `latest.json`, `build-release.ps1`,
   README with the VB-Cable setup steps. All lifted from wonkitch's
   `scripts/` and `docs/RELEASING.md`.
 
-Total: roughly 7–9 focused days to a shippable v1 (M0–M6, M8).
+Total: roughly 8–10 focused days to a shippable v1 (M0–M7, M9).
 
 ---
 

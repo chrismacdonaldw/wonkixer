@@ -45,6 +45,11 @@ engine readouts from milestone 1 are in place and can be kept or redone.
 - Preferences persist the chosen devices, auto-start, the current session
   values and the active preset reference, so the last state comes back on
   launch whether or not it was saved as a preset.
+- Calibration: while the engine is live, the UI can record up to three raw
+  takes (silence, speech, optional loud), then ask for an analysis that
+  returns a voice profile, a complete set of values and one plain-English
+  note per stage. Applying it is an ordinary `set_params`. The flow, prompts,
+  minimum lengths and result shape are in [`CALIBRATE.md`](CALIBRATE.md).
 
 ## Commands and events
 
@@ -69,6 +74,13 @@ delete_user_preset({ name }): void
 import_preset(): { name, modifiedMs } | null      // native open dialog
 export_preset({ name, values }): string | null     // native save dialog, returns the path
 open_presets_folder(): void
+
+begin_take(): void                                 // engine must be running; 60 s cap
+end_take({ role }): { role, seconds, peakDb, clipped }   // role: "silence" | "speech" | "loud"
+list_takes(): TakeSummary[]
+discard_takes(): void
+analyze_takes({ tone }): { profile: VoiceProfile; values: ParamValues; notes: { stage, text }[] }
+                                                   // tone: "flat" | "neutral" | "warm" | "bright"
 
 event "engine:state"  -> EngineState
 event "engine:meters" -> { inputPeakDb, outputPeakDb, clipped, latencyMs, dropouts,
