@@ -19,7 +19,7 @@ use wonkixer_dsp::{ParamValues, Params};
 
 use supervisor::Route;
 use worker::Command;
-pub use worker::EngineState;
+pub use worker::{EngineState, STATE_EVENT};
 
 const ENGINE_UNAVAILABLE: &str = "The audio engine is not running.";
 

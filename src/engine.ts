@@ -115,6 +115,8 @@ export interface Preferences {
   autoStart: boolean;
   session: ParamDocument;
   activePreset: PresetRef | null;
+  launchAtLogin?: boolean;
+  startMinimized?: boolean;
 }
 
 export type TakeRole = "silence" | "speech" | "loud";
@@ -184,6 +186,8 @@ export interface EngineApi {
   replaceParams(values: ParamDocument): Promise<ParamDocument>;
   preferences(): Promise<Preferences>;
   savePreferences(preferences: Preferences): Promise<Preferences>;
+  setLaunchAtLogin(enabled: boolean): Promise<Preferences>;
+  setStartMinimized(enabled: boolean): Promise<Preferences>;
   listPresets(): Promise<PresetCatalog>;
   loadPreset(ref: PresetRef): Promise<ParamDocument>;
   saveUserPreset(name: string, values: ParamDocument): Promise<PresetSummary>;
@@ -225,6 +229,8 @@ export function createEngineApi(call: Call, subscribe: Subscribe): EngineApi {
     replaceParams: (values) => call<ParamDocument>("set_params", { values }),
     preferences: () => call<Preferences>("get_preferences"),
     savePreferences: (preferences) => call<Preferences>("save_preferences", { preferences }),
+    setLaunchAtLogin: (enabled) => call<Preferences>("set_launch_at_login", { enabled }),
+    setStartMinimized: (enabled) => call<Preferences>("set_start_minimized", { enabled }),
     listPresets: () => call<PresetCatalog>("list_presets"),
     loadPreset: (ref) => call<ParamDocument>("load_preset", { kind: ref.kind, name: ref.name }),
     saveUserPreset: (name, values) => call<PresetSummary>("save_user_preset", { name, values }),

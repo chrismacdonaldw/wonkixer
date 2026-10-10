@@ -10,6 +10,7 @@ use wonkixer_dsp::{ParamId, ParamValues, StageId, presets};
 use crate::calibration::{self, CalibrationResult, CalibrationSession, TakeSummary};
 use crate::engine::devices::{self, AudioDevices, SetupStatus};
 use crate::engine::{Engine, EngineState};
+use crate::login;
 use crate::preferences::{Preferences, PreferencesStore, PresetKind};
 use crate::presets::{PresetCatalog, PresetStore, PresetSummary};
 
@@ -95,6 +96,24 @@ pub fn save_preferences(
     store: State<'_, PreferencesStore>,
 ) -> Result<Preferences, String> {
     store.save(preferences)
+}
+
+#[tauri::command]
+pub fn set_launch_at_login(
+    enabled: bool,
+    app: AppHandle,
+    store: State<'_, PreferencesStore>,
+) -> Result<Preferences, String> {
+    login::register(&app, enabled)?;
+    store.set_launch_at_login(enabled)
+}
+
+#[tauri::command]
+pub fn set_start_minimized(
+    enabled: bool,
+    store: State<'_, PreferencesStore>,
+) -> Result<Preferences, String> {
+    store.set_start_minimized(enabled)
 }
 
 #[tauri::command]

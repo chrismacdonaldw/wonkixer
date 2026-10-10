@@ -11,7 +11,9 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "wonkixer",
+        "visible": false,
         "width": 980,
         "height": 720,
         "minWidth": 820,

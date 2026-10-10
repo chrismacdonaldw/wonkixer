@@ -16,6 +16,8 @@ pub struct Preferences {
     pub auto_start: bool,
     pub session: ParamValues,
     pub active_preset: Option<PresetRef>,
+    pub launch_at_login: bool,
+    pub start_minimized: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -50,6 +52,8 @@ impl Default for Preferences {
                 kind: PresetKind::Builtin,
                 name: DEFAULT_PRESET.to_owned(),
             }),
+            launch_at_login: false,
+            start_minimized: false,
         }
     }
 }
@@ -75,12 +79,32 @@ impl PreferencesStore {
             .map_err(|_| UNAVAILABLE.to_owned())
     }
 
-    pub fn save(&self, mut preferences: Preferences) -> Result<Preferences, String> {
-        preferences.version = VERSION;
-        write_atomic(&self.path, &preferences)?;
+    pub fn save(&self, preferences: Preferences) -> Result<Preferences, String> {
+        self.update(|current| {
+            *current = Preferences {
+                launch_at_login: current.launch_at_login,
+                start_minimized: current.start_minimized,
+                ..preferences
+            }
+        })
+    }
+
+    pub fn set_launch_at_login(&self, enabled: bool) -> Result<Preferences, String> {
+        self.update(|current| current.launch_at_login = enabled)
+    }
+
+    pub fn set_start_minimized(&self, enabled: bool) -> Result<Preferences, String> {
+        self.update(|current| current.start_minimized = enabled)
+    }
+
+    fn update(&self, change: impl FnOnce(&mut Preferences)) -> Result<Preferences, String> {
         let mut current = self.current.lock().map_err(|_| UNAVAILABLE.to_owned())?;
-        *current = preferences.clone();
-        Ok(preferences)
+        let mut next = current.clone();
+        change(&mut next);
+        next.version = VERSION;
+        write_atomic(&self.path, &next)?;
+        *current = next.clone();
+        Ok(next)
     }
 }
 
@@ -146,6 +170,41 @@ mod tests {
 
         assert_eq!(reloaded, preferences);
         assert!(!reloaded.session.is_bypassed(StageId::NoiseSuppressor));
+    }
+
+    #[test]
+    fn saving_from_the_window_keeps_the_startup_behaviour() {
+        let path = scratch("behaviour");
+        let store = PreferencesStore::load(path.clone());
+        store.set_launch_at_login(true).expect("launch at login");
+        store.set_start_minimized(true).expect("start minimized");
+
+        let from_window = Preferences {
+            auto_start: false,
+            ..Preferences::default()
+        };
+        let saved = store.save(from_window).expect("save");
+
+        assert!(!saved.auto_start);
+        assert!(saved.launch_at_login);
+        assert!(saved.start_minimized);
+        assert_eq!(
+            PreferencesStore::load(path).current().expect("current"),
+            saved
+        );
+    }
+
+    #[test]
+    fn older_files_without_startup_behaviour_default_to_off() {
+        let path = scratch("older");
+        fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        fs::write(&path, br#"{ "version": 1, "autoStart": false }"#).expect("write");
+
+        let current = PreferencesStore::load(path).current().expect("current");
+
+        assert!(!current.auto_start);
+        assert!(!current.launch_at_login);
+        assert!(!current.start_minimized);
     }
 
     #[test]
