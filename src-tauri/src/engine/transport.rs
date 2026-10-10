@@ -16,6 +16,7 @@ pub struct Overflow;
 pub struct Inlet {
     producer: HeapProd<f32>,
     converter: Option<RateConverter>,
+    pushed: u64,
 }
 
 impl Inlet {
@@ -26,7 +27,12 @@ impl Inlet {
         Ok(Self {
             producer,
             converter,
+            pushed: 0,
         })
+    }
+
+    pub fn pushed(&self) -> u64 {
+        self.pushed
     }
 
     pub fn latency_frames(&self) -> usize {
@@ -43,14 +49,19 @@ impl Inlet {
 
     pub fn push(&mut self, sample: f32) -> Result<(), Overflow> {
         let Some(converter) = &mut self.converter else {
-            return self.producer.try_push(sample).map_err(|_| Overflow);
+            self.producer.try_push(sample).map_err(|_| Overflow)?;
+            self.pushed += 1;
+            return Ok(());
         };
-        match converter.push(sample) {
-            Some(converted) if self.producer.push_slice(converted) < converted.len() => {
-                Err(Overflow)
-            }
-            _ => Ok(()),
+        let Some(converted) = converter.push(sample) else {
+            return Ok(());
+        };
+        let accepted = self.producer.push_slice(converted);
+        self.pushed += accepted as u64;
+        if accepted < converted.len() {
+            return Err(Overflow);
         }
+        Ok(())
     }
 }
 
@@ -66,6 +77,7 @@ pub struct Outlet {
     margin: usize,
     block: usize,
     primed: bool,
+    consumed: u64,
 }
 
 impl Outlet {
@@ -75,11 +87,16 @@ impl Outlet {
             margin: (sample_rate * MARGIN_MS / 1000) as usize,
             block: 0,
             primed: false,
+            consumed: 0,
         }
     }
 
     pub fn fill(&self) -> usize {
         self.consumer.occupied_len()
+    }
+
+    pub fn position(&self) -> u64 {
+        self.consumed
     }
 
     pub fn pull(&mut self, block: &mut [f32]) -> Pull {
@@ -100,16 +117,17 @@ impl Outlet {
             return Pull::Underrun;
         }
 
-        if fill > self.high_water() {
-            self.consumer.skip(1);
-            self.consumer.pop_slice(block);
+        let taken = if fill > self.high_water() {
+            self.consumer.skip(1) + self.consumer.pop_slice(block)
         } else if fill < self.low_water() && block.len() > 1 {
             let last = block.len() - 1;
-            self.consumer.pop_slice(&mut block[..last]);
+            let taken = self.consumer.pop_slice(&mut block[..last]);
             block[last] = block[last - 1];
+            taken
         } else {
-            self.consumer.pop_slice(block);
-        }
+            self.consumer.pop_slice(block)
+        };
+        self.consumed += taken as u64;
         Pull::Ready
     }
 
@@ -160,6 +178,7 @@ mod tests {
         assert_eq!(outlet.pull(&mut block), Pull::Ready);
         assert_eq!(block[0], 0.0);
         assert_eq!(outlet.fill(), BLOCK);
+        assert_eq!(outlet.position(), BLOCK as u64);
     }
 
     #[test]
@@ -179,6 +198,7 @@ mod tests {
 
         assert_eq!(outlet.pull(&mut block), Pull::Ready);
         assert_eq!(outlet.fill(), MARGIN);
+        assert_eq!(outlet.position(), (BLOCK - 1) as u64);
         assert_eq!(block[BLOCK - 1], block[BLOCK - 2]);
     }
 
@@ -190,6 +210,7 @@ mod tests {
 
         assert_eq!(outlet.pull(&mut block), Pull::Ready);
         assert_eq!(outlet.fill(), fill - BLOCK - 1);
+        assert_eq!(outlet.position(), (BLOCK + 1) as u64);
         assert_eq!(block[0], 1.0);
     }
 
@@ -202,6 +223,7 @@ mod tests {
         }
         assert_eq!(inlet.latency_frames(), 0);
         assert_eq!(inlet.chain_frames(BLOCK), BLOCK);
+        assert_eq!(inlet.pushed(), BLOCK as u64);
         assert_eq!(consumer.occupied_len(), BLOCK);
     }
 
@@ -214,6 +236,7 @@ mod tests {
         }
         assert!(inlet.latency_frames() > 0);
         assert_eq!(inlet.chain_frames(441), 480);
+        assert_eq!(inlet.pushed(), consumer.occupied_len() as u64);
         assert!(consumer.occupied_len().abs_diff(RATE as usize) <= inlet.latency_frames());
     }
 
@@ -225,6 +248,7 @@ mod tests {
             inlet.push(0.0).expect("room");
         }
         assert_eq!(inlet.push(0.0), Err(Overflow));
+        assert_eq!(inlet.pushed(), u64::from(RATE));
     }
 
     #[test]

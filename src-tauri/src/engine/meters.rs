@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::Duration;
 
 use serde::Serialize;
 use wonkixer_dsp::units::MIN_DB;
@@ -17,6 +18,8 @@ pub struct MeterStore {
     ring_fill: AtomicU32,
     processing_latency: AtomicU32,
     conversion_latency: AtomicU32,
+    transport_delay_us: AtomicU32,
+    flowing: AtomicBool,
     dropouts: AtomicU32,
     reduction: [AtomicU32; StageId::COUNT],
     detector: [AtomicU32; StageId::COUNT],
@@ -59,8 +62,14 @@ impl MeterStore {
         }
     }
 
+    pub fn mark_flowing(&self) {
+        self.flowing.store(true, Ordering::Relaxed);
+    }
+
     pub fn record_dropout(&self) {
-        self.dropouts.fetch_add(1, Ordering::Relaxed);
+        if self.flowing.load(Ordering::Relaxed) {
+            self.dropouts.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub fn set_processing_latency(&self, frames: usize) {
@@ -73,6 +82,11 @@ impl MeterStore {
             .store(clamp_u32(frames), Ordering::Relaxed);
     }
 
+    pub fn record_transport_delay(&self, delay: Duration) {
+        let micros = u32::try_from(delay.as_micros()).unwrap_or(u32::MAX).max(1);
+        self.transport_delay_us.store(micros, Ordering::Relaxed);
+    }
+
     pub fn reset(&self) {
         for cell in [
             &self.input_peak,
@@ -82,6 +96,7 @@ impl MeterStore {
             &self.ring_fill,
             &self.processing_latency,
             &self.conversion_latency,
+            &self.transport_delay_us,
             &self.dropouts,
         ] {
             cell.store(0, Ordering::Relaxed);
@@ -89,21 +104,17 @@ impl MeterStore {
         for cell in self.reduction.iter().chain(self.detector.iter()) {
             cell.store(0, Ordering::Relaxed);
         }
+        self.flowing.store(false, Ordering::Relaxed);
     }
 
     pub fn snapshot(&self, sample_rate: u32) -> MeterFrame {
         let input_peak = f32::from_bits(self.input_peak.swap(0, Ordering::Relaxed));
         let output_peak = f32::from_bits(self.output_peak.swap(0, Ordering::Relaxed));
-        let buffered_frames = self.input_block.load(Ordering::Relaxed)
-            + self.ring_fill.load(Ordering::Relaxed)
-            + self.output_block.load(Ordering::Relaxed)
-            + self.processing_latency.load(Ordering::Relaxed)
-            + self.conversion_latency.load(Ordering::Relaxed);
         MeterFrame {
             input_peak_db: to_db(input_peak),
             output_peak_db: to_db(output_peak),
             clipped: output_peak >= CLIP_LEVEL,
-            latency_ms: buffered_frames as f32 * 1000.0 / sample_rate as f32,
+            latency_ms: self.latency_ms(sample_rate),
             dropouts: self.dropouts.load(Ordering::Relaxed),
             gain_reduction: StageId::DYNAMICS
                 .iter()
@@ -113,6 +124,21 @@ impl MeterStore {
                 .iter()
                 .map(|&stage| (stage.key(), take(&self.detector[stage.index()]) + MIN_DB))
                 .collect(),
+        }
+    }
+
+    fn latency_ms(&self, sample_rate: u32) -> f32 {
+        let chain_frames = self.processing_latency.load(Ordering::Relaxed)
+            + self.conversion_latency.load(Ordering::Relaxed);
+        let chain_ms = chain_frames as f32 * 1000.0 / sample_rate as f32;
+        match self.transport_delay_us.load(Ordering::Relaxed) {
+            0 => {
+                let buffered_frames = self.input_block.load(Ordering::Relaxed)
+                    + self.ring_fill.load(Ordering::Relaxed)
+                    + self.output_block.load(Ordering::Relaxed);
+                buffered_frames as f32 * 1000.0 / sample_rate as f32 + chain_ms
+            }
+            micros => micros as f32 / 1000.0 + chain_ms,
         }
     }
 }
@@ -156,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn latency_sums_the_buffered_frames_and_processing_delay() {
+    fn until_measured_latency_sums_the_buffered_frames_and_processing_delay() {
         let meters = MeterStore::default();
         meters.record_input(0.0, 480);
         meters.record_output(0.0, 480, 960);
@@ -222,11 +248,48 @@ mod tests {
     #[test]
     fn dropouts_accumulate_until_reset() {
         let meters = MeterStore::default();
+        meters.mark_flowing();
         meters.record_dropout();
         meters.record_dropout();
         assert_eq!(meters.snapshot(48_000).dropouts, 2);
 
         meters.reset();
         assert_eq!(meters.snapshot(48_000).dropouts, 0);
+    }
+
+    #[test]
+    fn glitches_before_audio_flows_are_not_dropouts() {
+        let meters = MeterStore::default();
+        meters.record_dropout();
+        assert_eq!(meters.snapshot(48_000).dropouts, 0);
+
+        meters.mark_flowing();
+        meters.record_dropout();
+        meters.reset();
+        meters.record_dropout();
+        assert_eq!(meters.snapshot(48_000).dropouts, 0);
+    }
+
+    #[test]
+    fn a_measured_delay_replaces_the_buffer_estimate() {
+        let meters = MeterStore::default();
+        meters.record_input(0.0, 480);
+        meters.record_output(0.0, 480, 960);
+        meters.set_processing_latency(240);
+        meters.set_conversion_latency(96);
+
+        meters.record_transport_delay(Duration::from_micros(31_250));
+
+        assert!((meters.snapshot(48_000).latency_ms - 38.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn the_estimate_returns_after_a_reset() {
+        let meters = MeterStore::default();
+        meters.record_transport_delay(Duration::from_millis(30));
+        meters.reset();
+        meters.record_output(0.0, 480, 0);
+
+        assert!((meters.snapshot(48_000).latency_ms - 10.0).abs() < 0.001);
     }
 }

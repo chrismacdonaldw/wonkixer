@@ -1,4 +1,5 @@
 mod capture;
+mod clock;
 pub mod devices;
 mod meters;
 mod processor;
