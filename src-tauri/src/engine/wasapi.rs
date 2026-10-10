@@ -6,7 +6,7 @@ use std::thread::{self, JoinHandle};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_EVENT, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, IAudioClient3, IAudioClock,
-    IAudioRenderClient, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
+    IAudioRenderClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX,
     WAVEFORMATEXTENSIBLE,
 };
 use windows::Win32::Media::KernelStreaming::WAVE_FORMAT_EXTENSIBLE;
@@ -15,16 +15,20 @@ use windows::Win32::System::Com::{
     CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
     CoUninitialize,
 };
-use windows::Win32::System::Threading::{
-    AvSetMmThreadCharacteristicsW, CreateEventW, SetEvent, WaitForMultipleObjects,
-};
-use windows::core::{HSTRING, w};
+use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForMultipleObjects};
+use windows::core::HSTRING;
+
+use super::priority;
 
 const WAKE_TIMEOUT_MS: u32 = 2_000;
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 const NANOS_PER_TICK: u128 = 100;
 const THREAD_GONE: &str = "The output thread stopped unexpectedly.";
-const STOP_SIGNALLED: WAIT_EVENT = WAIT_EVENT(WAIT_OBJECT_0.0 + 1);
+const STALLED: &str = "it has not asked for audio for 2 seconds.";
+const THREAD_ENDED: &str = "its audio thread ended unexpectedly.";
+const NOT_FLOAT: &str = "The output device does not mix in 32-bit float.";
+const STOP_SIGNALLED: WAIT_EVENT = WAIT_OBJECT_0;
+const WAKE_SIGNALLED: WAIT_EVENT = WAIT_EVENT(WAIT_OBJECT_0.0 + 1);
 
 pub type Callback = Box<dyn FnMut(&mut [f32], u128) + Send>;
 pub type ErrorSink = Box<dyn FnMut(cpal::Error) + Send>;
@@ -34,11 +38,7 @@ pub struct Format {
     pub channels: u16,
     pub sample_rate: u32,
     pub period: usize,
-}
-
-pub fn promote_current_thread() {
-    let mut task = 0;
-    unsafe { AvSetMmThreadCharacteristicsW(w!("Pro Audio"), &mut task) }.ok();
+    pub default_period: usize,
 }
 
 pub fn prepare(endpoint_id: &str) -> Result<Prepared, String> {
@@ -52,17 +52,17 @@ pub fn prepare(endpoint_id: &str) -> Result<Prepared, String> {
         .name("audio-render".to_owned())
         .spawn(move || run(&endpoint, &signal, ready, begun, report))
         .map_err(|error| format!("Could not start the output thread: {error}"))?;
-    let render = Render {
-        stop,
-        thread: Some(thread),
-    };
-    let format = format.recv().map_err(|_| THREAD_GONE.to_owned())??;
-    Ok(Prepared {
-        begin,
+    let mut prepared = Prepared {
+        begin: Some(begin),
         started,
-        format,
-        render,
-    })
+        format: None,
+        render: Some(Render {
+            stop,
+            thread: Some(thread),
+        }),
+    };
+    prepared.format = Some(format.recv().map_err(|_| THREAD_GONE.to_owned())??);
+    Ok(prepared)
 }
 
 struct Begin {
@@ -71,23 +71,32 @@ struct Begin {
 }
 
 pub struct Prepared {
-    begin: SyncSender<Begin>,
+    begin: Option<SyncSender<Begin>>,
     started: Receiver<Result<(), String>>,
-    format: Format,
-    render: Render,
+    format: Option<Format>,
+    render: Option<Render>,
 }
 
 impl Prepared {
     pub fn format(&self) -> Format {
-        self.format
+        self.format.expect("a prepared output knows its format")
     }
 
-    pub fn start(self, callback: Callback, on_error: ErrorSink) -> Result<Render, String> {
+    pub fn start(mut self, callback: Callback, on_error: ErrorSink) -> Result<Render, String> {
         self.begin
+            .take()
+            .ok_or_else(|| THREAD_GONE.to_owned())?
             .send(Begin { callback, on_error })
             .map_err(|_| THREAD_GONE.to_owned())?;
         self.started.recv().map_err(|_| THREAD_GONE.to_owned())??;
-        Ok(self.render)
+        self.render.take().ok_or_else(|| THREAD_GONE.to_owned())
+    }
+}
+
+impl Drop for Prepared {
+    fn drop(&mut self) {
+        drop(self.begin.take());
+        drop(self.render.take());
     }
 }
 
@@ -112,9 +121,14 @@ fn run(
     begun: Receiver<Begin>,
     report: SyncSender<Result<(), String>>,
 ) {
-    let Ok(_apartment) = Apartment::enter() else {
-        ready.send(Err(THREAD_GONE.to_owned())).ok();
-        return;
+    let _apartment = match Apartment::enter() {
+        Ok(apartment) => apartment,
+        Err(error) => {
+            ready
+                .send(Err(format!("Could not set up the output thread: {error}")))
+                .ok();
+            return;
+        }
     };
     let stream = match Stream::open(endpoint) {
         Ok(stream) => stream,
@@ -131,7 +145,7 @@ fn run(
     else {
         return;
     };
-    promote_current_thread();
+    priority::promote_current_thread();
     if let Err(error) = stream.start() {
         report
             .send(Err(format!("Could not start the output device: {error}")))
@@ -139,10 +153,50 @@ fn run(
         return;
     }
     report.send(Ok(())).ok();
-    if let Err(error) = stream.pump(stop, &mut callback, &mut on_error) {
-        on_error(cpal::Error::from(error));
+    let mut watch = Watch::new(&mut on_error);
+    match stream.pump(stop, &mut callback, &mut watch) {
+        Ok(()) => watch.stopped(),
+        Err(error) => watch.failed(error),
     }
     stream.stop();
+}
+
+struct Watch<'sink> {
+    on_error: &'sink mut ErrorSink,
+    settled: bool,
+}
+
+impl<'sink> Watch<'sink> {
+    fn new(on_error: &'sink mut ErrorSink) -> Self {
+        Self {
+            on_error,
+            settled: false,
+        }
+    }
+
+    fn glitch(&mut self) {
+        (self.on_error)(cpal::Error::new(cpal::ErrorKind::Xrun));
+    }
+
+    fn failed(mut self, error: cpal::Error) {
+        self.settled = true;
+        (self.on_error)(error);
+    }
+
+    fn stopped(mut self) {
+        self.settled = true;
+    }
+}
+
+impl Drop for Watch<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            (self.on_error)(cpal::Error::with_message(
+                cpal::ErrorKind::BackendError,
+                THREAD_ENDED,
+            ));
+        }
+    }
 }
 
 struct Stream {
@@ -157,29 +211,45 @@ struct Stream {
 
 impl Stream {
     fn open(endpoint: &str) -> Result<Self, String> {
-        let unavailable = |error: windows::core::Error| {
+        let refused = |error: windows::core::Error| {
             format!("The output device has no low-latency mode: {error}")
         };
         unsafe {
             let devices: IMMDeviceEnumerator =
-                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(unavailable)?;
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(refused)?;
             let device = devices
                 .GetDevice(&HSTRING::from(endpoint))
-                .map_err(unavailable)?;
-            let client: IAudioClient3 = device.Activate(CLSCTX_ALL, None).map_err(unavailable)?;
-            let mix = MixFormat(client.GetMixFormat().map_err(unavailable)?);
-            let (channels, sample_rate) = float_layout(mix.0)
-                .ok_or_else(|| "The output device does not mix in 32-bit float.".to_owned())?;
-            let period = mix.smallest_period(&client).map_err(unavailable)?;
-            client
-                .InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period, mix.0, None)
-                .map_err(unavailable)?;
+                .map_err(refused)?;
+            let (client, mix) = activate(&device).map_err(refused)?;
+            let (channels, sample_rate) =
+                float_layout(mix.0).ok_or_else(|| NOT_FLOAT.to_owned())?;
+            let (default_period, smallest) = engine_periods(&client, &mix).map_err(refused)?;
+            if smallest >= default_period {
+                return Err(format!(
+                    "The output device's shortest shared-mode period is its default, {default_period} frames."
+                ));
+            }
+            let client = match client.InitializeSharedAudioStream(
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                smallest,
+                mix.0,
+                None,
+            ) {
+                Ok(()) => client,
+                Err(_) => retry_at_current_period(&device, default_period)?,
+            };
+            let period = current_period(&client).map_err(refused)?;
+            if period >= default_period {
+                return Err(format!(
+                    "The output device runs at its default period, {period} frames."
+                ));
+            }
             let wake = Event::new()?;
-            client.SetEventHandle(wake.0).map_err(unavailable)?;
-            let buffer = client.GetBufferSize().map_err(unavailable)?;
-            let render = client.GetService().map_err(unavailable)?;
-            let clock: IAudioClock = client.GetService().map_err(unavailable)?;
-            let ticks_per_second = u128::from(clock.GetFrequency().map_err(unavailable)?).max(1);
+            client.SetEventHandle(wake.0).map_err(refused)?;
+            let buffer = client.GetBufferSize().map_err(refused)?;
+            let render = client.GetService().map_err(refused)?;
+            let clock: IAudioClock = client.GetService().map_err(refused)?;
+            let ticks_per_second = u128::from(clock.GetFrequency().map_err(refused)?).max(1);
             Ok(Self {
                 client,
                 render,
@@ -189,6 +259,7 @@ impl Stream {
                     channels,
                     sample_rate,
                     period: period as usize,
+                    default_period: default_period as usize,
                 },
                 buffer,
                 ticks_per_second,
@@ -213,9 +284,9 @@ impl Stream {
         &self,
         stop: &Event,
         callback: &mut Callback,
-        on_error: &mut ErrorSink,
-    ) -> windows::core::Result<()> {
-        let handles = [self.wake.0, stop.0];
+        watch: &mut Watch,
+    ) -> Result<(), cpal::Error> {
+        let handles = [stop.0, self.wake.0];
         let channels = usize::from(self.format.channels);
         let mut written = u64::from(self.buffer);
         loop {
@@ -223,17 +294,20 @@ impl Stream {
             if woke == STOP_SIGNALLED {
                 return Ok(());
             }
-            if woke != WAIT_OBJECT_0 && woke != WAIT_TIMEOUT {
-                return Err(windows::core::Error::from_thread());
+            if woke != WAKE_SIGNALLED && woke != WAIT_TIMEOUT {
+                return Err(windows::core::Error::from_thread().into());
             }
             let padding = unsafe { self.client.GetCurrentPadding()? };
             if woke == WAIT_TIMEOUT {
-                continue;
+                return Err(cpal::Error::with_message(
+                    cpal::ErrorKind::BackendError,
+                    STALLED,
+                ));
             }
-            if padding == 0 {
-                on_error(cpal::Error::new(cpal::ErrorKind::Xrun));
+            let Refill { frames, starved } = refill(self.buffer, padding);
+            if starved {
+                watch.glitch();
             }
-            let frames = self.buffer.saturating_sub(padding);
             if frames == 0 {
                 continue;
             }
@@ -252,10 +326,97 @@ impl Stream {
     fn playback(&self, written: u64) -> windows::core::Result<u128> {
         let (mut position, mut instant) = (0u64, 0u64);
         unsafe { self.clock.GetPosition(&mut position, Some(&mut instant))? };
-        let played = u128::from(position) * NANOS_PER_SECOND / self.ticks_per_second;
-        let queued = u128::from(written) * NANOS_PER_SECOND / u128::from(self.format.sample_rate);
-        Ok(u128::from(instant) * NANOS_PER_TICK + queued.saturating_sub(played))
+        Ok(playback_instant(
+            Position {
+                ticks: position,
+                ticks_per_second: self.ticks_per_second,
+                instant,
+            },
+            written,
+            self.format.sample_rate,
+        ))
     }
+}
+
+unsafe fn activate(device: &IMMDevice) -> windows::core::Result<(IAudioClient3, MixFormat)> {
+    unsafe {
+        let client: IAudioClient3 = device.Activate(CLSCTX_ALL, None)?;
+        let mix = MixFormat(client.GetMixFormat()?);
+        Ok((client, mix))
+    }
+}
+
+unsafe fn engine_periods(
+    client: &IAudioClient3,
+    mix: &MixFormat,
+) -> windows::core::Result<(u32, u32)> {
+    let (mut default, mut fundamental, mut smallest, mut largest) = (0, 0, 0, 0);
+    unsafe {
+        client.GetSharedModeEnginePeriod(
+            mix.0,
+            &mut default,
+            &mut fundamental,
+            &mut smallest,
+            &mut largest,
+        )?;
+    }
+    Ok((default, smallest.max(1)))
+}
+
+unsafe fn current_period(client: &IAudioClient3) -> windows::core::Result<u32> {
+    let mut format = std::ptr::null_mut();
+    let mut period = 0;
+    unsafe { client.GetCurrentSharedModeEnginePeriod(&mut format, &mut period)? };
+    drop(MixFormat(format));
+    Ok(period)
+}
+
+unsafe fn retry_at_current_period(
+    device: &IMMDevice,
+    default_period: u32,
+) -> Result<IAudioClient3, String> {
+    let refused = |error: windows::core::Error| {
+        format!("The output device refused a low-latency period: {error}")
+    };
+    unsafe {
+        let (client, mix) = activate(device).map_err(refused)?;
+        let current = current_period(&client).map_err(refused)?;
+        if current == 0 || current >= default_period {
+            return Err(format!(
+                "Another app holds the output device at {current} frames, its default period."
+            ));
+        }
+        client
+            .InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK, current, mix.0, None)
+            .map_err(refused)?;
+        Ok(client)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Refill {
+    frames: u32,
+    starved: bool,
+}
+
+fn refill(buffer: u32, padding: u32) -> Refill {
+    Refill {
+        frames: buffer.saturating_sub(padding),
+        starved: padding == 0,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Position {
+    ticks: u64,
+    ticks_per_second: u128,
+    instant: u64,
+}
+
+fn playback_instant(position: Position, written: u64, sample_rate: u32) -> u128 {
+    let played = u128::from(position.ticks) * NANOS_PER_SECOND / position.ticks_per_second;
+    let queued = u128::from(written) * NANOS_PER_SECOND / u128::from(sample_rate.max(1));
+    u128::from(position.instant) * NANOS_PER_TICK + queued.saturating_sub(played)
 }
 
 unsafe fn float_layout(format: *const WAVEFORMATEX) -> Option<(u16, u32)> {
@@ -275,25 +436,11 @@ unsafe fn float_layout(format: *const WAVEFORMATEX) -> Option<(u16, u32)> {
 
 struct MixFormat(*mut WAVEFORMATEX);
 
-impl MixFormat {
-    fn smallest_period(&self, client: &IAudioClient3) -> windows::core::Result<u32> {
-        let (mut default, mut fundamental, mut smallest, mut largest) = (0, 0, 0, 0);
-        unsafe {
-            client.GetSharedModeEnginePeriod(
-                self.0,
-                &mut default,
-                &mut fundamental,
-                &mut smallest,
-                &mut largest,
-            )?;
-        }
-        Ok(smallest.max(1))
-    }
-}
-
 impl Drop for MixFormat {
     fn drop(&mut self) {
-        unsafe { CoTaskMemFree(Some(self.0.cast_const().cast())) };
+        if !self.0.is_null() {
+            unsafe { CoTaskMemFree(Some(self.0.cast_const().cast())) };
+        }
     }
 }
 
@@ -337,10 +484,14 @@ impl Drop for Apartment {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use windows::Win32::Media::Audio::{WAVE_FORMAT_PCM, WAVEFORMATEXTENSIBLE_0};
     use windows::Win32::Media::KernelStreaming::KSDATAFORMAT_SUBTYPE_PCM;
 
     use super::*;
+
+    const SECOND: u128 = 1_000_000_000;
 
     fn header(tag: u32, channels: u16, bits: u16) -> WAVEFORMATEX {
         WAVEFORMATEX {
@@ -368,6 +519,15 @@ mod tests {
         }
     }
 
+    fn error_log() -> (Arc<Mutex<Vec<cpal::ErrorKind>>>, ErrorSink) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&log);
+        (
+            log,
+            Box::new(move |error: cpal::Error| sink.lock().expect("log").push(error.kind())),
+        )
+    }
+
     #[test]
     fn accepts_a_32_bit_float_mix() {
         let plain = header(WAVE_FORMAT_IEEE_FLOAT, 1, 32);
@@ -387,6 +547,79 @@ mod tests {
 
         assert_eq!(unsafe { float_layout(&plain) }, None);
         assert_eq!(unsafe { float_layout((&raw const wrapped).cast()) }, None);
+    }
+
+    #[test]
+    fn refills_what_the_device_consumed_and_flags_an_empty_buffer() {
+        assert_eq!(
+            refill(280, 152),
+            Refill {
+                frames: 128,
+                starved: false
+            }
+        );
+        assert_eq!(
+            refill(280, 0),
+            Refill {
+                frames: 280,
+                starved: true
+            }
+        );
+        assert_eq!(
+            refill(280, 300),
+            Refill {
+                frames: 0,
+                starved: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_block_plays_once_everything_queued_ahead_of_it_has_played() {
+        let position = Position {
+            ticks: 384_000,
+            ticks_per_second: 384_000,
+            instant: 50_000_000,
+        };
+
+        assert_eq!(
+            playback_instant(position, 48_000 + 480, 48_000),
+            5 * SECOND + 10_000_000
+        );
+        assert_eq!(playback_instant(position, 24_000, 48_000), 5 * SECOND);
+    }
+
+    #[test]
+    fn a_failed_pump_reports_its_error_once() {
+        let (log, mut sink) = error_log();
+        Watch::new(&mut sink).failed(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
+
+        assert_eq!(
+            *log.lock().expect("log"),
+            [cpal::ErrorKind::DeviceNotAvailable]
+        );
+    }
+
+    #[test]
+    fn a_pump_ended_by_the_stop_event_reports_nothing() {
+        let (log, mut sink) = error_log();
+        let mut watch = Watch::new(&mut sink);
+        watch.glitch();
+        watch.stopped();
+
+        assert_eq!(*log.lock().expect("log"), [cpal::ErrorKind::Xrun]);
+    }
+
+    #[test]
+    fn a_pump_that_unwinds_reports_a_failure() {
+        let (log, mut sink) = error_log();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _watch = Watch::new(&mut sink);
+            panic!("callback failed");
+        }));
+
+        assert!(unwound.is_err());
+        assert_eq!(*log.lock().expect("log"), [cpal::ErrorKind::BackendError]);
     }
 
     #[test]

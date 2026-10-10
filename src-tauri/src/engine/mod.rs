@@ -4,6 +4,7 @@ mod clock;
 pub mod devices;
 mod meters;
 mod output;
+mod priority;
 mod processor;
 mod resampler;
 mod streams;

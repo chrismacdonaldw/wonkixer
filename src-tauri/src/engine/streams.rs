@@ -8,27 +8,21 @@ use super::capture::{self, Sink, Tap};
 use super::clock::{CaptureClock, Ticker};
 use super::devices::Direction;
 use super::meters::MeterStore;
-use super::output::{Output, OutputStream, negotiated};
+use super::output::{Output, OutputMode, OutputStream, negotiated};
+use super::priority;
 use super::processor::Processor;
 use super::transport::{self, Inlet, Outlet, Pull};
-use super::wasapi;
 
 pub struct Streams {
     _input: cpal::Stream,
     _output: OutputStream,
 }
 
-impl Streams {
-    #[cfg(test)]
-    fn low_latency(&self) -> bool {
-        matches!(self._output, OutputStream::LowLatency { .. })
-    }
-}
-
 pub struct Opened {
     pub streams: Streams,
     pub sample_rate: u32,
     pub capture: Sink,
+    pub output: OutputMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +62,7 @@ pub fn open(
 ) -> Result<Opened, String> {
     let input_config = negotiated(input.default_input_config(), "input")?;
     let output = Output::prepare(output)?;
+    let mode = output.mode();
     let sample_rate = output.sample_rate();
     let (producer, consumer) = transport::ring(sample_rate);
     let inlet = Inlet::new(producer, input_config.sample_rate(), sample_rate)?;
@@ -115,6 +110,7 @@ pub fn open(
         },
         sample_rate,
         capture,
+        output: mode,
     })
 }
 
@@ -159,7 +155,7 @@ fn input_callback(
     let mut pre_roll = true;
     move |data, info| {
         if pre_roll {
-            wasapi::promote_current_thread();
+            priority::promote_current_thread();
             pre_roll = false;
             return;
         }
@@ -246,8 +242,12 @@ mod tests {
     const SOAK: &str = "WONKIXER_SOAK_SECONDS";
     const MIN_SOAK_SECONDS: u64 = 10;
     const SETTLE_SECONDS: u64 = 1;
-    const LOW_LATENCY_BOUND_MS: f32 = 45.0;
-    const SHARED_BOUND_MS: f32 = 80.0;
+    const OUTPUT_CHOICE: &str = "WONKIXER_OUTPUT";
+    const INPUT_PACKET_MS: f32 = 10.0;
+    const RING_SLACK_MS: f32 = 3.0;
+    const LOOKAHEAD_MS: f32 = 5.0;
+    const DEVICE_QUEUE_MS: f32 = 10.0;
+    const PERIODS_IN_FLIGHT: f32 = 6.0;
     const AUDITION_FROM_SECOND: u64 = 3;
     const AUDITION_SECONDS: u64 = 4;
     const TAKE_RATE: u32 = 48_000;
@@ -331,14 +331,24 @@ mod tests {
     }
 
     fn test_output(host: &cpal::Host) -> cpal::Device {
+        let wanted =
+            std::env::var(OUTPUT_CHOICE).unwrap_or_else(|_| devices::CABLE_INPUT.to_owned());
         host.output_devices()
             .expect("output devices")
             .find(|device| {
-                devices::display_name(device)
-                    .is_ok_and(|name| name.starts_with(devices::CABLE_INPUT))
+                devices::display_name(device).is_ok_and(|name| name.starts_with(&wanted))
             })
             .or_else(|| host.default_output_device())
             .expect("an output device")
+    }
+
+    fn latency_bound_ms(period: usize, sample_rate: u32) -> f32 {
+        let period_ms = period as f32 * 1000.0 / sample_rate as f32;
+        INPUT_PACKET_MS
+            + RING_SLACK_MS
+            + LOOKAHEAD_MS
+            + DEVICE_QUEUE_MS
+            + PERIODS_IN_FLIGHT * period_ms
     }
 
     fn test_playback(host: &cpal::Host) -> cpal::Device {
@@ -394,7 +404,8 @@ mod tests {
         )
         .expect("streams to open");
         let sample_rate = opened.sample_rate;
-        let low_latency = opened.streams.low_latency();
+        let mode = opened.output.clone();
+        let bound = latency_bound_ms(mode.period(), sample_rate);
         let mut worst = 0.0f32;
         let mut audition = None;
         for second in 1..=seconds {
@@ -427,15 +438,10 @@ mod tests {
         }
         let frame = meters.snapshot(sample_rate);
         eprintln!(
-            "{} -> {} ({}): worst {worst:.1} ms after settling, {} dropouts in {seconds} s, \
-             auditioned to {} for {AUDITION_SECONDS} s",
+            "{} -> {} ({mode}): worst {worst:.1} ms after settling (bound {bound:.0} ms), \
+             {} dropouts in {seconds} s, auditioned to {} for {AUDITION_SECONDS} s",
             devices::display_name(&input).unwrap_or_default(),
             devices::display_name(&output).unwrap_or_default(),
-            if low_latency {
-                "low-latency output"
-            } else {
-                "shared output"
-            },
             frame.dropouts,
             devices::display_name(&playback).unwrap_or_default(),
         );
@@ -443,11 +449,6 @@ mod tests {
         assert!(failures.lock().expect("failure log").is_empty());
         assert!(!audition_lost.load(Ordering::Relaxed));
         assert_eq!(frame.dropouts, 0);
-        let bound = if low_latency {
-            LOW_LATENCY_BOUND_MS
-        } else {
-            SHARED_BOUND_MS
-        };
         assert!(worst > 0.0 && worst < bound, "{worst} ms");
     }
 }

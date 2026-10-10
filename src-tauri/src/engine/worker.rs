@@ -302,6 +302,10 @@ impl Worker {
             },
         )?;
 
+        eprintln!(
+            "wonkixer: {} -> {}: {}",
+            input_endpoint.name, output_endpoint.name, opened.output
+        );
         let state = EngineState {
             running: true,
             input: Some(input_endpoint.clone()),

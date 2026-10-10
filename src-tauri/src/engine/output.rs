@@ -1,5 +1,8 @@
+use std::fmt;
+
 use cpal::traits::{DeviceTrait, StreamTrait};
 
+use super::priority::Promotion;
 use super::wasapi::{self, Prepared, Render};
 
 pub enum Output<'device> {
@@ -7,6 +10,7 @@ pub enum Output<'device> {
     Shared {
         device: &'device cpal::Device,
         config: cpal::SupportedStreamConfig,
+        refusal: String,
     },
 }
 
@@ -15,19 +19,63 @@ pub enum OutputStream {
     Shared { _stream: cpal::Stream },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OutputMode {
+    LowLatency { period: usize },
+    Shared { period: usize, refusal: String },
+}
+
+impl OutputMode {
+    #[cfg(test)]
+    pub fn period(&self) -> usize {
+        match self {
+            Self::LowLatency { period } | Self::Shared { period, .. } => *period,
+        }
+    }
+}
+
+impl fmt::Display for OutputMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LowLatency { period } => {
+                write!(formatter, "low-latency output, {period}-frame period")
+            }
+            Self::Shared { period, refusal } => write!(
+                formatter,
+                "shared output, {period}-frame period (no low-latency mode: {refusal})"
+            ),
+        }
+    }
+}
+
 impl<'device> Output<'device> {
     pub fn prepare(device: &'device cpal::Device) -> Result<Self, String> {
-        let low_latency = device
-            .id()
-            .ok()
-            .and_then(|id| wasapi::prepare(id.id()).ok());
-        if let Some(prepared) = low_latency {
-            return Ok(Self::LowLatency(prepared));
-        }
+        let refusal = match device.id() {
+            Ok(id) => match wasapi::prepare(id.id()) {
+                Ok(prepared) => return Ok(Self::LowLatency(prepared)),
+                Err(refusal) => refusal,
+            },
+            Err(error) => format!("The output device has no id: {error}"),
+        };
         Ok(Self::Shared {
             device,
             config: negotiated(device.default_output_config(), "output")?,
+            refusal,
         })
+    }
+
+    pub fn mode(&self) -> OutputMode {
+        match self {
+            Self::LowLatency(prepared) => OutputMode::LowLatency {
+                period: prepared.format().period,
+            },
+            Self::Shared {
+                config, refusal, ..
+            } => OutputMode::Shared {
+                period: shared_period(config),
+                refusal: refusal.clone(),
+            },
+        }
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -46,8 +94,14 @@ impl<'device> Output<'device> {
 
     pub fn burst(&self) -> usize {
         match self {
-            Self::LowLatency(prepared) => 2 * prepared.format().period,
-            Self::Shared { config, .. } => shared_period(config),
+            Self::LowLatency(prepared) => {
+                let format = prepared.format();
+                burst(format.period, format.default_period)
+            }
+            Self::Shared { config, .. } => {
+                let period = shared_period(config);
+                burst(period, period)
+            }
         }
     }
 
@@ -60,16 +114,13 @@ impl<'device> Output<'device> {
             Self::LowLatency(prepared) => prepared
                 .start(Box::new(render), Box::new(on_error))
                 .map(|render| OutputStream::LowLatency { _render: render }),
-            Self::Shared { device, config } => {
-                let mut promoted = false;
+            Self::Shared { device, config, .. } => {
+                let mut promotion = Promotion::default();
                 let stream = device
                     .build_output_stream(
                         config.config(),
                         move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
-                            if !promoted {
-                                wasapi::promote_current_thread();
-                                promoted = true;
-                            }
+                            promotion.once();
                             render(data, info.timestamp().playback.as_nanos());
                         },
                         on_error,
@@ -82,6 +133,14 @@ impl<'device> Output<'device> {
                 Ok(OutputStream::Shared { _stream: stream })
             }
         }
+    }
+}
+
+fn burst(period: usize, default_period: usize) -> usize {
+    if period < default_period {
+        2 * period
+    } else {
+        period
     }
 }
 
@@ -130,6 +189,26 @@ mod tests {
         let unknown = config(cpal::SupportedBufferSize::Unknown);
 
         assert_eq!(shared_period(&unknown), 480);
+    }
+
+    #[test]
+    fn only_a_short_period_needs_room_for_two_periods_at_once() {
+        assert_eq!(burst(128, 480), 256);
+        assert_eq!(burst(480, 480), 480);
+    }
+
+    #[test]
+    fn the_mode_names_the_period_and_why_low_latency_was_refused() {
+        let shared = OutputMode::Shared {
+            period: 480,
+            refusal: "its shortest period is its default".to_owned(),
+        };
+
+        assert_eq!(OutputMode::LowLatency { period: 128 }.period(), 128);
+        assert_eq!(
+            shared.to_string(),
+            "shared output, 480-frame period (no low-latency mode: its shortest period is its default)"
+        );
     }
 
     #[test]

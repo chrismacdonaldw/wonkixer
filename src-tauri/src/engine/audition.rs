@@ -5,10 +5,10 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use wonkixer_dsp::Params;
 
 use super::output::negotiated;
+use super::priority::Promotion;
 use super::processor::Processor;
 use super::resampler;
 use super::streams::{Fault, fault};
-use super::wasapi;
 
 const FADE_MS: u32 = 15;
 
@@ -99,15 +99,12 @@ pub fn open(
         config.channels(),
         sample_rate as usize,
     );
-    let mut promoted = false;
+    let mut promotion = Promotion::default();
     let stream = device
         .build_output_stream(
             config.config(),
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                if !promoted {
-                    wasapi::promote_current_thread();
-                    promoted = true;
-                }
+                promotion.once();
                 render(data);
             },
             move |error| {
