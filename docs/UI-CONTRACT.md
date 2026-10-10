@@ -60,8 +60,8 @@ engine readouts from milestone 1 are in place and can be kept or redone.
   back to a standard 10 ms shared-mode stream. Nothing in the engine state
   says which; only `latencyMs` shows the difference.
 - Engine state: running or not, the chosen input and output device names,
-  sample rate, an error message when something failed, and
-  `waitingForDevices`.
+  sample rate, an error message when something failed, `waitingForDevices`,
+  and `audition` (below).
 - The chain runs at the output device's rate. When the input runs at a
   different rate (a 44.1 kHz microphone into a 48 kHz cable, say) the engine
   resamples the input on the way in, which adds about 2 ms; nothing is
@@ -126,6 +126,34 @@ engine readouts from milestone 1 are in place and can be kept or redone.
   returns a voice profile, a complete set of values and one plain-English
   note per stage. Applying it is an ordinary `set_params`. The flow, prompts,
   minimum lengths and result shape are in [`CALIBRATE.md`](CALIBRATE.md).
+- Audition: while the engine is live, `start_audition({ role, outputId })`
+  plays one recorded take (normally `speech`) on repeat through a second copy
+  of the chain into a playback device, `outputId` or the Windows default
+  output when it is `null`. The second chain reads the same parameters as the
+  live one, so `set_param`, `set_bypass`, `set_params`, a preset load,
+  COMPARE and HEAR DRY are heard on the loop at once. The microphone-to-cable
+  route keeps running untouched and the loop never reaches the cable, so
+  calls keep hearing the microphone. The take is the raw recording at the
+  chain's rate; it starts from the top, with its ends faded over 15 ms so the
+  loop point does not click, and a playback device at another rate gets it
+  converted once before it starts. Its own latency does not matter and is not
+  measured. While it plays the engine state carries
+  `audition: { role, output: { id, name } }`, otherwise `null`. Calling
+  `start_audition` again while it plays switches the take or the device in
+  one step. It stops on `stop_audition`, on `begin_take` (a new recording
+  never picks up the loop), whenever the engine stops, restarts or loses a
+  device, and when the playback device goes away; in that last case the state
+  just returns to `audition: null` with no `error`, since the route is fine.
+  The loop plays its own copy of the take, so `discard_takes` or a new
+  `end_take` does not change what is already playing. The meters keep
+  describing the live microphone route, not the loop. It refuses with a
+  sentence to show as is: `Start the engine before playing a take.`,
+  `There is no speech take yet. Record one first.` (or silence, loud),
+  `The playback device is not connected.`,
+  `Windows has no default playback device. Pick one to listen on.`, and, for
+  a CABLE Input or the route's own output device,
+  `That device feeds your calls, so everyone would hear the loop. Pick your headphones.`
+  Device format problems read like the route's, with "playback" as the role.
 
 ## Commands and events
 
@@ -157,15 +185,20 @@ import_preset(): { name, modifiedMs } | null      // native open dialog
 export_preset({ name, values }): string | null     // native save dialog, returns the path
 open_presets_folder(): void
 
-begin_take(): void                                 // engine must be running; 60 s cap
+begin_take(): void                                 // engine must be running; 60 s cap;
+                                                   //   stops the audition
 end_take({ role }): { role, seconds, peakDb, clipped }   // role: "silence" | "speech" | "loud"
 list_takes(): TakeSummary[]
 discard_takes(): void
 analyze_takes({ tone }): { profile: VoiceProfile; values: ParamValues; notes: { stage, text }[] }
                                                    // tone: "flat" | "neutral" | "warm" | "bright"
+start_audition({ role, outputId }): EngineState    // outputId null: the Windows default output;
+                                                   //   again while playing switches take or device
+stop_audition(): EngineState
 
 event "engine:state"  -> EngineState                // { running, input, output, sampleRate,
-                                                   //   error, waitingForDevices }
+                                                   //   error, waitingForDevices,
+                                                   //   audition: { role, output: { id, name } } | null }
 event "engine:meters" -> { inputPeakDb, outputPeakDb, clipped, latencyMs, dropouts,
                            gainReduction: Record<stageKey, number>,
                            detectorDb: Record<stageKey, number> }

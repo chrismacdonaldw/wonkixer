@@ -606,7 +606,9 @@ robustness, quality upgrades and release follow as M7–M9._
 - True-peak limiting (4× oversampled detector) if inter-sample clips show up.
 - RNNoise landed early as the optional noise suppression stage (M5).
 - Audition loop: play a recorded take through the live chain instead of the
-  mic, so presets and tweaks are compared on identical material.
+  mic, so presets and tweaks are compared on identical material. Landed as a
+  second chain on the same parameters, looping a take into the headphones
+  while the mic keeps feeding the cable; see `docs/UI-CONTRACT.md`.
 - "Monitor" toggle: also send the processed signal to the headphones, with a
   warning that you will hear ~35 ms of your own voice delayed.
 - Spectrum strip under the EQ card (FFT in the engine thread from a meter

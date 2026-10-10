@@ -43,8 +43,11 @@ other input when the default is the cable's own "CABLE Output", and the first
 "CABLE Input" output, or the default output when no cable exists. It runs for
 at least 10 s, prints the measured latency every second, and asserts there
 were no dropouts and that the worst latency after the first second stayed
-under 45 ms on the low-latency output (80 ms on the fallback). It is skipped
-unless opted in; `WONKIXER_SOAK_SECONDS` lengthens the run:
+under 45 ms on the low-latency output (80 ms on the fallback). From the third
+to the sixth second it also auditions a quiet gated 330 Hz tone to the default
+output (or the first output that is not the cable), so expect a soft beeping
+in the headphones; the route must stay free of dropouts while it plays. It is
+skipped unless opted in; `WONKIXER_SOAK_SECONDS` lengthens the run:
 
 ```powershell
 $env:WONKIXER_AUDIO_TESTS = "1"; cargo test -p wonkixer passes_audio -- --nocapture
