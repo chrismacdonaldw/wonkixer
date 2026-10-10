@@ -15,6 +15,7 @@ use crate::preferences::{Preferences, PreferencesStore, PresetKind};
 use crate::presets::{PresetCatalog, PresetStore, PresetSummary};
 
 const PRESET_FILTER: &str = "wonkixer preset";
+const CABLE_DOWNLOAD: &str = "https://vb-audio.com/Cable/";
 
 #[tauri::command]
 pub async fn list_audio_devices() -> Result<AudioDevices, String> {
@@ -24,6 +25,13 @@ pub async fn list_audio_devices() -> Result<AudioDevices, String> {
 #[tauri::command]
 pub async fn get_setup_status() -> Result<SetupStatus, String> {
     Ok(SetupStatus::detect(&enumerate_devices().await?))
+}
+
+#[tauri::command]
+pub fn open_cable_download(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(CABLE_DOWNLOAD, None::<String>)
+        .map_err(|error| format!("Could not open the VB-Cable download page: {error}"))
 }
 
 async fn enumerate_devices() -> Result<AudioDevices, String> {

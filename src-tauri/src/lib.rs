@@ -49,6 +49,7 @@ pub fn run() {
             commands::get_engine_state,
             commands::set_engine_supervision,
             commands::get_setup_status,
+            commands::open_cable_download,
             commands::get_schema,
             commands::get_params,
             commands::set_param,
