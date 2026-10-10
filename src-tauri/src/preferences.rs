@@ -25,6 +25,8 @@ pub struct Preferences {
 pub struct Devices {
     pub input_id: Option<String>,
     pub output_id: Option<String>,
+    pub input_name: Option<String>,
+    pub output_name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -158,6 +160,7 @@ mod tests {
         let store = PreferencesStore::load(path.clone());
         let mut preferences = Preferences::default();
         preferences.devices.input_id = Some("mic".to_owned());
+        preferences.devices.input_name = Some("Microphone (HyperX)".to_owned());
         preferences.auto_start = false;
         preferences.session.set(ParamId::CompressorRatio, 5.0);
         preferences
@@ -205,6 +208,27 @@ mod tests {
         assert!(!current.auto_start);
         assert!(!current.launch_at_login);
         assert!(!current.start_minimized);
+    }
+
+    #[test]
+    fn older_files_without_device_names_keep_their_ids() {
+        let path = scratch("unnamed");
+        fs::create_dir_all(path.parent().expect("parent")).expect("dir");
+        fs::write(
+            &path,
+            br#"{ "version": 1, "devices": { "inputId": "mic", "outputId": "cable" } }"#,
+        )
+        .expect("write");
+
+        let devices = PreferencesStore::load(path)
+            .current()
+            .expect("current")
+            .devices;
+
+        assert_eq!(devices.input_id.as_deref(), Some("mic"));
+        assert_eq!(devices.output_id.as_deref(), Some("cable"));
+        assert_eq!(devices.input_name, None);
+        assert_eq!(devices.output_name, None);
     }
 
     #[test]
