@@ -15,6 +15,13 @@ npm install
 npm run tauri dev
 ```
 
+The app keeps running in the tray when its window is closed: quit from the
+tray menu, or stop `tauri dev` with Ctrl+C. Only one copy runs at a time, so
+launching it again (an installed build next to a dev build included) just
+brings the running window forward. Turning on launch at login from a dev
+build registers the debug executable; turn it off again before relying on an
+installed build.
+
 ## Checks
 
 `npm run check` runs everything below in sequence.
@@ -38,6 +45,14 @@ few seconds and asserts there were no dropouts. It is skipped unless opted in:
 ```powershell
 $env:WONKIXER_AUDIO_TESTS = "1"; cargo test -p wonkixer passes_audio
 ```
+
+Device recovery is checked by hand: start the engine, unplug the headset (or
+its wireless dongle), confirm the error names the lost device and the state
+says it is waiting, plug it back in and confirm the engine is live again within
+a few seconds. Restarting the Windows Audio service (`Restart-Service
+Audiosrv` in an elevated PowerShell) exercises the same path. The resampler
+runs whenever the input and output rates differ; to hear it, set the
+microphone to 44 100 Hz under Sound settings, device properties, Advanced.
 
 ## Working on the sound
 

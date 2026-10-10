@@ -13,6 +13,9 @@ engine readouts from milestone 1 are in place and can be kept or redone.
   the two trims can be bypassed. Noise suppression is `optional`: it starts
   bypassed, shows up on the Add effect page, and adds `latencyMs` (10 ms) only
   while it is on. The engine keeps it running so switching it is a crossfade.
+  It only works when the chain runs at 48 kHz: at any other `sampleRate` in
+  the engine state it passes audio through untouched and adds no latency, so
+  the UI should present it as unavailable rather than as on.
 - Each stage carries `family` (level, filter, cleanup, dynamics, sibilance, eq)
   which picks its page layout, a `title`, a one-line `blurb`, and `bypassable`.
 - 32 parameters. Their ids, labels, units, ranges, defaults and steps are in
@@ -29,12 +32,32 @@ engine readouts from milestone 1 are in place and can be kept or redone.
 - Changing a parameter is instant and click-free; the engine smooths it. The
   UI can send a value on every drag event.
 - Meters arrive 30 times a second: input peak dBFS, output peak dBFS, a clip
-  flag, estimated latency in ms (including the chain's own lookahead and any
-  optional-stage delay), dropout count, and two maps keyed by stage for the
+  flag, estimated latency in ms (including the chain's own lookahead, any
+  optional-stage delay and the resampler when one is running), dropout count,
+  and two maps keyed by stage for the
   dynamics stages: `gainReduction` in dB and `detectorDb`, the level each
   stage's detector saw, for drawing live level against a threshold.
 - Engine state: running or not, the chosen input and output device names,
-  sample rate, and an error message when something failed.
+  sample rate, an error message when something failed, and
+  `waitingForDevices`.
+- The chain runs at the output device's rate. When the input runs at a
+  different rate (a 44.1 kHz microphone into a 48 kHz cable, say) the engine
+  resamples the input on the way in, which adds about 2 ms; nothing is
+  refused for a rate mismatch any more.
+- Device supervision: after a successful start the engine remembers the
+  route. If a stream dies (the headset is unplugged or switched off, Windows
+  resets the device, the audio service restarts) the state turns to
+  `running: false` with a plain-English `error` such as `The input device
+  "Microphone (HyperX Cloud Alpha Wireless)" was disconnected.` and
+  `waitingForDevices: true`. Every 2 s the engine checks whether both devices
+  are back and restarts the route on its own, emitting a normal running
+  state. A start that fails only because a device is not connected also
+  waits for it. `stop_engine` ends the wait; so does turning supervision off
+  with `set_engine_supervision({ enabled: false })` (it is on by default and
+  not persisted, so a UI that ties it to `autoStart` should send it on
+  launch). `waitingForDevices` is what to show as "waiting for the headset";
+  while it is true the input and output in the state are `null`, so name the
+  devices from the pickers.
 - Presets: five built-ins (Flat, Headset clean-up, Podcast, Broadcast, Late
   night) are read-only. User presets are one JSON file each under
   `%APPDATA%\com.chrismacdonaldw.wonkixer\presets`, with list, load, save,
@@ -44,7 +67,29 @@ engine readouts from milestone 1 are in place and can be kept or redone.
   fall back to defaults.
 - Preferences persist the chosen devices, auto-start, the current session
   values and the active preset reference, so the last state comes back on
-  launch whether or not it was saved as a preset.
+  launch whether or not it was saved as a preset. They also carry
+  `launchAtLogin` and `startMinimized`, which belong to the backend:
+  `save_preferences` keeps their stored values whatever the frontend sends,
+  and they change only through `set_launch_at_login` (which also registers or
+  removes the Windows startup entry) and `set_start_minimized`. Both return
+  the full preferences.
+- Window and process: the app lives in the tray. Closing the window (the
+  title bar close button, Alt+F4) hides it; the engine keeps running. The
+  tray icon opens the window on a left click, and its menu has Show wonkixer,
+  Start engine / Stop engine (follows the engine state; it reads Stop while
+  waiting for devices, and Start uses the devices saved in preferences) and
+  Quit, which shuts the engine down and exits. Launching a second copy only
+  brings the first window back. The window is created hidden and the backend
+  shows it at startup unless `startMinimized` is set, in which case the app
+  starts in the tray with the page loaded and auto-start running as usual.
+  The page is never torn down by a close, so it does not need to flush on
+  close beyond its normal debounced save, and it must not call
+  `window.destroy()` (the capability does not grant it).
+- First run: `get_setup_status()` reports whether VB-Cable is installed,
+  matched by endpoint name: a "CABLE Input" output (what the engine renders
+  to) and a "CABLE Output" input (what Discord and OBS record from). Either id
+  is `null` when its endpoint is missing; `cableInstalled` needs both. The
+  device counts help tell "no cable" from "no audio devices at all".
 - Calibration: while the engine is live, the UI can record up to three raw
   takes (silence, speech, optional loud), then ask for an analysis that
   returns a voice profile, a complete set of values and one plain-English
@@ -56,8 +101,11 @@ engine readouts from milestone 1 are in place and can be kept or redone.
 ```ts
 list_audio_devices(): { inputs: AudioDevice[]; outputs: AudioDevice[] }
 start_engine({ inputId, outputId }): EngineState
-stop_engine(): EngineState
+stop_engine(): EngineState                         // also ends waiting for devices
 get_engine_state(): EngineState
+set_engine_supervision({ enabled }): EngineState   // automatic recovery, on by default
+get_setup_status(): { cableInstalled, cableInputId: string | null,
+                      cableOutputId: string | null, inputs: number, outputs: number }
 get_schema(): { stages: StageSpec[]; params: ParamSpec[] }
 get_params(): ParamValues            // { values: Record<key, number>; bypassed: Record<stageKey, boolean> }
 set_param({ id, value }): void
@@ -65,7 +113,9 @@ set_bypass({ stage, bypassed }): void
 set_params({ values }): ParamValues
 
 get_preferences(): Preferences
-save_preferences({ preferences }): Preferences
+save_preferences({ preferences }): Preferences     // keeps launchAtLogin and startMinimized
+set_launch_at_login({ enabled }): Preferences      // updates the Windows startup entry too
+set_start_minimized({ enabled }): Preferences
 list_presets(): { builtin: string[]; user: { name, modifiedMs }[] }
 load_preset({ kind: "builtin" | "user", name }): ParamValues
 save_user_preset({ name, values }): { name, modifiedMs }
@@ -82,7 +132,8 @@ discard_takes(): void
 analyze_takes({ tone }): { profile: VoiceProfile; values: ParamValues; notes: { stage, text }[] }
                                                    // tone: "flat" | "neutral" | "warm" | "bright"
 
-event "engine:state"  -> EngineState
+event "engine:state"  -> EngineState                // { running, input, output, sampleRate,
+                                                   //   error, waitingForDevices }
 event "engine:meters" -> { inputPeakDb, outputPeakDb, clipped, latencyMs, dropouts,
                            gainReduction: Record<stageKey, number>,
                            detectorDb: Record<stageKey, number> }
