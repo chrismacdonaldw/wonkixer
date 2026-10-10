@@ -5,7 +5,7 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use wonkixer_dsp::Params;
 
 use super::capture::{self, Sink, Tap};
-use super::clock::CaptureClock;
+use super::clock::{CaptureClock, Ticker};
 use super::devices::Direction;
 use super::meters::MeterStore;
 use super::processor::Processor;
@@ -85,7 +85,7 @@ pub fn open(
         .build_output_stream(
             output_config.config(),
             output_callback(
-                Outlet::new(consumer, sample_rate),
+                Outlet::new(consumer, sample_rate, period(&output_config)),
                 processor,
                 output_config.channels(),
                 sample_rate,
@@ -113,6 +113,13 @@ pub fn open(
         sample_rate,
         capture,
     })
+}
+
+fn period(config: &cpal::SupportedStreamConfig) -> usize {
+    match *config.buffer_size() {
+        cpal::SupportedBufferSize::Range { min, .. } => min as usize,
+        cpal::SupportedBufferSize::Unknown => (config.sample_rate() / 100) as usize,
+    }
 }
 
 fn negotiated(
@@ -184,8 +191,9 @@ fn input_callback(
             if overflowed {
                 meters.record_dropout();
             }
-            clock.mark(first, info.timestamp().capture.as_nanos());
-            meters.record_input(peak, inlet.chain_frames(data.len() / channels));
+            let frames = inlet.chain_frames(data.len() / channels);
+            clock.mark(first, frames, info.timestamp().capture.as_nanos());
+            meters.record_input(peak, frames);
         })
     }
 }
@@ -200,6 +208,7 @@ fn output_callback(
     mut tap: Tap,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     let channels = usize::from(channels);
+    let ticker = Ticker::new();
     let mut mono = vec![0.0f32; sample_rate as usize];
     let mut warmed_up = false;
     move |data, info| {
@@ -212,7 +221,7 @@ fn output_callback(
             let fill = outlet.fill();
             let head = outlet.position();
             let block = &mut mono[..frames];
-            match outlet.pull(block) {
+            match outlet.pull(block, clock.timing(head, ticker.now_ns())) {
                 Pull::Underrun => meters.record_dropout(),
                 Pull::Ready => {
                     meters.mark_flowing();
@@ -251,7 +260,7 @@ mod tests {
     const SOAK: &str = "WONKIXER_SOAK_SECONDS";
     const MIN_SOAK_SECONDS: u64 = 10;
     const SETTLE_SECONDS: u64 = 1;
-    const LATENCY_BOUND_MS: f32 = 120.0;
+    const LATENCY_BOUND_MS: f32 = 80.0;
 
     fn failure_log() -> (
         Arc<Mutex<Vec<StreamFailure>>>,

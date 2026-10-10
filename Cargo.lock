@@ -5692,6 +5692,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "trash",
+ "windows",
  "wonkixer-dsp",
 ]
 
