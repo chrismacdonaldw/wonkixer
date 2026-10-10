@@ -47,18 +47,22 @@ engine readouts from milestone 1 are in place and can be kept or redone.
   between CABLE Input and CABLE Output, and whatever Discord or OBS add when
   they read CABLE Output, are not included. With the HyperX headset into
   VB-Cable it reads 27-36 ms (the cable settles into one of two phases when
-  the route starts); a device that has to use the fallback output below
-  reads about 70 ms.
+  the route starts). The HyperX headphones as the output, which take the
+  standard stream described below, read about 60 ms.
 - `dropouts` counts audio lost after audio started flowing: the transfer
   between the two devices running dry or overflowing, the microphone
   reporting a gap, or the output device's buffer running dry. Glitches
   reported while a route is starting are not counted. It resets when a route
   starts.
-- The output opens in a low-latency mode, at the shortest shared-mode period
-  the device allows (2.7 ms on VB-Cable, 10 ms on most hardware), whenever
-  the device mixes in 32-bit float and offers that mode. Otherwise it falls
-  back to a standard 10 ms shared-mode stream. Nothing in the engine state
-  says which; only `latencyMs` shows the difference.
+- The output opens in a low-latency mode only when the device mixes in
+  32-bit float and grants a shared-mode period shorter than its default.
+  VB-Cable does (2.7 ms instead of 10 ms); the hardware outputs on the
+  reference machine (HyperX headphones, NVIDIA HDMI and Broadcast, the TV)
+  only offer their 10 ms default, so they use the standard shared-mode
+  stream, as does any device where the low-latency mode is refused. Nothing
+  in the engine state says which; only `latencyMs` shows the difference. The
+  engine prints the choice and the reason for a refusal to stderr when a
+  route starts.
 - Engine state: running or not, the chosen input and output device names,
   sample rate, an error message when something failed, `waitingForDevices`,
   and `audition` (below).

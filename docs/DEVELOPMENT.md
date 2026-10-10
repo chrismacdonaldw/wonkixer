@@ -40,10 +40,15 @@ to the code they cover.
 
 One Rust test opens real audio devices: the default input, or the first
 other input when the default is the cable's own "CABLE Output", and the first
-"CABLE Input" output, or the default output when no cable exists. It runs for
-at least 10 s, prints the measured latency every second, and asserts there
-were no dropouts and that the worst latency after the first second stayed
-under 45 ms on the low-latency output (80 ms on the fallback). From the third
+output whose name starts with `WONKIXER_OUTPUT` ("CABLE Input" unless set),
+or the default output when none matches. It runs for at least 10 s, prints
+the measured latency every second, and asserts there were no dropouts and
+that the worst latency after the first second stayed under a bound worked
+out from the output period the device granted: 10 ms of input packet, 3 ms
+of ring slack, 5 ms of lookahead, 10 ms for the device's own queue and six
+output periods in flight (two in the ring, about two in the WASAPI buffer,
+the rest in the engine). That is 44 ms on the cable's 2.7 ms period and
+88 ms on a 10 ms period. From the third
 to the sixth second it also auditions a quiet gated 330 Hz tone to the default
 output (or the first output that is not the cable), so expect a soft beeping
 in the headphones; the route must stay free of dropouts while it plays. It is
@@ -52,6 +57,7 @@ skipped unless opted in; `WONKIXER_SOAK_SECONDS` lengthens the run:
 ```powershell
 $env:WONKIXER_AUDIO_TESTS = "1"; cargo test -p wonkixer passes_audio -- --nocapture
 $env:WONKIXER_SOAK_SECONDS = "60"; cargo test -p wonkixer passes_audio -- --nocapture
+$env:WONKIXER_OUTPUT = "Headphones (HyperX"; cargo test -p wonkixer passes_audio -- --nocapture
 ```
 
 ### Latency
@@ -61,20 +67,26 @@ The footer's latency is measured from the Windows audio clock (see
 the HyperX headset into VB-Cable:
 
 - The microphone delivers 10 ms packets and cannot go shorter, so the
-  newest sample in hand can be up to 10 ms old.
+  newest sample in hand can be up to 10 ms old. The first packets after a
+  start are dropped until two arrive in step: the first one is pre-roll from
+  before the start, 3 ms out of step with the rest.
 - The ring between the two devices holds one input packet, two output
   periods and a 2 ms margin, about 17-18 ms counted from capture. It steers
   on the age of its oldest frame rather than on how full it is, so it stays
   safe whatever the phase between the two devices' clocks
-  (`engine/transport.rs`).
+  (`engine/transport.rs`). A larger packet or block than usual raises that
+  allowance, at most to twice its normal size, for 10 s after it was last
+  seen.
 - The output (`engine/wasapi.rs`) runs in 2.7 ms periods with a 280-frame
   buffer; the cable reports consuming a block 5-13 ms after it is handed
   over, depending on its phase when the route starts.
 - The limiter's lookahead adds 5 ms.
 
-A device without a low-latency shared mode, or one that does not mix in
-32-bit float, goes through cpal instead (`engine/output.rs`): 10 ms periods
-and a 1056-frame buffer, about 70 ms in total.
+A device that only offers its default 10 ms period, or does not mix in
+32-bit float, goes through cpal instead (`engine/output.rs`): 10 ms periods,
+one period of ring allowance and a 1056-frame buffer. The HyperX headphones
+take this path and measure about 60 ms; the cable forced onto it measured
+about 70 ms.
 
 Device recovery is checked by hand: start the engine, unplug the headset (or
 its wireless dongle), confirm the error names the lost device and the state

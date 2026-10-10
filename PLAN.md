@@ -652,7 +652,7 @@ Total: roughly 8–10 focused days to a shippable v1 (M0–M7, M9).
 |---|---|
 | cpal `Stream` is `!Send`; can't live in Tauri state | Dedicated engine thread owns streams; everything else talks over a channel. Decided. |
 | Clock drift between USB mic and VB-Cable | The ring is steered on the age of its oldest frame, read from capture timestamps, repeating or dropping one sample at a time; `rubato` fallback. |
-| 10 ms shared-mode periods are the floor in cpal | The output now opens through `IAudioClient3` at the device's smallest period (2.7 ms on VB-Cable), with cpal as the fallback. See Latency below. |
+| 10 ms shared-mode periods are the floor in cpal | The output opens through `IAudioClient3` when the device grants a period shorter than its default (2.7 ms on VB-Cable); hardware that only offers 10 ms stays on cpal. See Latency below. |
 | VB-Cable adds its own buffer | Tune its "Max latency" in the VB-Cable control panel; document the value that works. |
 | Allocation or lock on the audio thread sneaks in | `assert_no_alloc` in debug; code review rule: callbacks only touch `Chain`, ring, atomics. |
 | Denormals after silence | FTZ/DAZ on the output thread; test times a 2-minute silence. |
@@ -674,7 +674,13 @@ and the reading app are extra.
 |---|---|---|---|
 | Before (ring primed to two 1056-frame blocks, cpal output) | 60-71 ms (an estimate) | 94-97 ms | 1 per start (a capture glitch before audio flowed), none after |
 | Ring steered to one packet plus one block, cpal output | 69 ms | 68-71 ms | 0 in 60 s |
-| Low-latency `IAudioClient3` output at 128 frames | 27-36 ms | 27-36 ms | 0 in 60 s, idle and with all 16 cores busy |
+| Low-latency `IAudioClient3` output at 128 frames | 27-36 ms | 26-37 ms | 0 in 60 s, idle and with all 16 cores busy |
+
+Only VB-Cable grants a shorter period on this machine; the hardware outputs
+(HyperX headphones, NVIDIA HDMI and Broadcast, the TV) offer only their 10 ms
+default and stay on cpal. The headphones as the output measure about 60 ms;
+the first version of the low-latency path took them too, at 10 ms with a
+two-period allowance, and measured about 70 ms.
 
 What is left, roughly: 10 ms microphone packets (its driver allows no shorter
 shared-mode period); 7-8 ms of ring above that (two 2.7 ms output periods,
