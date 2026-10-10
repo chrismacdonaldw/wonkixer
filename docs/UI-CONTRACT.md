@@ -52,7 +52,11 @@ engine readouts from milestone 1 are in place and can be kept or redone.
   `waitingForDevices: true`. Every 2 s the engine checks whether both devices
   are back and restarts the route on its own, emitting a normal running
   state. A start that fails only because a device is not connected also
-  waits for it. `stop_engine` ends the wait; so does turning supervision off
+  waits for it: `start_engine` still rejects with `The input device is not
+  connected.` (or output), but the state it leaves behind, in the event and
+  from `get_engine_state`, has `waitingForDevices: true`, so after a rejected
+  start ask for the state before showing it as stopped. `stop_engine` ends
+  the wait; so does turning supervision off
   with `set_engine_supervision({ enabled: false })` (it is on by default and
   not persisted, so a UI that ties it to `autoStart` should send it on
   launch). `waitingForDevices` is what to show as "waiting for the headset";
@@ -67,7 +71,10 @@ engine readouts from milestone 1 are in place and can be kept or redone.
   fall back to defaults.
 - Preferences persist the chosen devices, auto-start, the current session
   values and the active preset reference, so the last state comes back on
-  launch whether or not it was saved as a preset. They also carry
+  launch whether or not it was saved as a preset. Each device id is saved
+  with the name it had (`inputName`, `outputName`; `null` in files written
+  before names were kept), so a picker can still show a saved device that is
+  not connected at launch. They also carry
   `launchAtLogin` and `startMinimized`, which belong to the backend:
   `save_preferences` keeps their stored values whatever the frontend sends,
   and they change only through `set_launch_at_login` (which also registers or
@@ -90,6 +97,8 @@ engine readouts from milestone 1 are in place and can be kept or redone.
   to) and a "CABLE Output" input (what Discord and OBS record from). Either id
   is `null` when its endpoint is missing; `cableInstalled` needs both. The
   device counts help tell "no cable" from "no audio devices at all".
+  `open_cable_download()` opens the VB-Cable download page
+  (https://vb-audio.com/Cable/) in the default browser.
 - Calibration: while the engine is live, the UI can record up to three raw
   takes (silence, speech, optional loud), then ask for an analysis that
   returns a voice profile, a complete set of values and one plain-English
@@ -106,6 +115,7 @@ get_engine_state(): EngineState
 set_engine_supervision({ enabled }): EngineState   // automatic recovery, on by default
 get_setup_status(): { cableInstalled, cableInputId: string | null,
                       cableOutputId: string | null, inputs: number, outputs: number }
+open_cable_download(): void                        // VB-Cable download page in the browser
 get_schema(): { stages: StageSpec[]; params: ParamSpec[] }
 get_params(): ParamValues            // { values: Record<key, number>; bypassed: Record<stageKey, boolean> }
 set_param({ id, value }): void
