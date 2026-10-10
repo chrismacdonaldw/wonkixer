@@ -14,6 +14,10 @@ const KNEE_DB: f32 = 3.0;
 const ATTACK_MS: f32 = 0.5;
 const RELEASE_MS: f32 = 40.0;
 
+pub fn sidechain(sample_rate: f32, frequency: f32) -> Coefficients {
+    Coefficients::band_pass(sample_rate, frequency, SIDECHAIN_Q)
+}
+
 pub struct DeEsser {
     sample_rate: f32,
     frequency: Smoother,
@@ -45,7 +49,7 @@ impl DeEsser {
                 sample_rate,
             ),
             split_band: ParamId::DeEsserSplitBand.spec().default >= 0.5,
-            sidechain: Biquad::new(Self::sidechain_at(sample_rate, frequency)),
+            sidechain: Biquad::new(sidechain(sample_rate, frequency)),
             split: [split, split],
             smoother: GainSmoother::new(ATTACK_MS, RELEASE_MS, sample_rate),
             reduction: 0.0,
@@ -53,17 +57,12 @@ impl DeEsser {
         }
     }
 
-    fn sidechain_at(sample_rate: f32, frequency: f32) -> Coefficients {
-        Coefficients::band_pass(sample_rate, frequency, SIDECHAIN_Q)
-    }
-
     fn split_at(sample_rate: f32, frequency: f32) -> Coefficients {
         Coefficients::low_pass(sample_rate, frequency * SPLIT_RATIO, SPLIT_Q)
     }
 
     fn retune(&mut self, frequency: f32) {
-        self.sidechain
-            .set(Self::sidechain_at(self.sample_rate, frequency));
+        self.sidechain.set(sidechain(self.sample_rate, frequency));
         let split = Self::split_at(self.sample_rate, frequency);
         for stage in &mut self.split {
             stage.set(split);

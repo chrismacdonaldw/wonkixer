@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod analysis;
 pub mod biquad;
 pub mod chain;
 pub mod delay;
