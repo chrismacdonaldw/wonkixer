@@ -3,9 +3,11 @@ use std::path::PathBuf;
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
+use wonkixer_dsp::analysis::{TakeRole, Tone};
 use wonkixer_dsp::params::{self, Schema};
 use wonkixer_dsp::{ParamId, ParamValues, StageId, presets};
 
+use crate::calibration::{self, CalibrationResult, CalibrationSession, TakeSummary};
 use crate::engine::devices::{self, AudioDevices};
 use crate::engine::{Engine, EngineState};
 use crate::preferences::{Preferences, PreferencesStore, PresetKind};
@@ -178,4 +180,42 @@ async fn pick_save_target(app: AppHandle, file_name: String) -> Result<Option<Pa
     })
     .await
     .map_err(|error| format!("The save dialog failed: {error}"))
+}
+
+#[tauri::command]
+pub async fn begin_take(engine: State<'_, Engine>) -> Result<(), String> {
+    engine.begin_capture(calibration::MAX_TAKE_SECONDS).await
+}
+
+#[tauri::command]
+pub async fn end_take(
+    role: TakeRole,
+    engine: State<'_, Engine>,
+    session: State<'_, CalibrationSession>,
+) -> Result<TakeSummary, String> {
+    let take = engine.end_capture().await?;
+    Ok(session.store(role, take))
+}
+
+#[tauri::command]
+pub fn list_takes(session: State<'_, CalibrationSession>) -> Vec<TakeSummary> {
+    session.summaries()
+}
+
+#[tauri::command]
+pub fn discard_takes(session: State<'_, CalibrationSession>) {
+    session.discard();
+}
+
+#[tauri::command]
+pub async fn analyze_takes(
+    tone: Tone,
+    engine: State<'_, Engine>,
+    session: State<'_, CalibrationSession>,
+) -> Result<CalibrationResult, String> {
+    let takes = session.takes();
+    let base = engine.params().snapshot();
+    tauri::async_runtime::spawn_blocking(move || calibration::calibrate(&takes, &base, tone))
+        .await
+        .map_err(|error| format!("Calibration failed: {error}"))?
 }

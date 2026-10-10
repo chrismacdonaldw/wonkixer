@@ -1,3 +1,4 @@
+mod calibration;
 mod commands;
 mod engine;
 mod preferences;
@@ -20,6 +21,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             app.manage(PreferencesStore::load(data_dir.join("preferences.json")));
             app.manage(PresetStore::new(data_dir.join("presets")));
+            app.manage(calibration::CalibrationSession::default());
             app.manage(engine::Engine::spawn(app.handle().clone()));
             Ok(())
         })
@@ -43,6 +45,11 @@ pub fn run() {
             commands::import_preset,
             commands::export_preset,
             commands::open_presets_folder,
+            commands::begin_take,
+            commands::end_take,
+            commands::list_takes,
+            commands::discard_takes,
+            commands::analyze_takes,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build wonkixer")

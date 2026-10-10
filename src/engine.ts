@@ -108,6 +108,59 @@ export interface Preferences {
   activePreset: PresetRef | null;
 }
 
+export type TakeRole = "silence" | "speech" | "loud";
+export type Tone = "flat" | "neutral" | "warm" | "bright";
+
+export interface TakeSummary {
+  role: TakeRole;
+  seconds: number;
+  peakDb: number;
+  clipped: boolean;
+}
+
+export interface LevelStats {
+  p10: number;
+  p50: number;
+  p90: number;
+  max: number;
+}
+
+export interface Sibilance {
+  frequencyHz: number;
+  levelDb: number;
+  vowelLevelDb: number;
+}
+
+export interface SpectrumBand {
+  frequencyHz: number;
+  levelDb: number;
+  referenceDb: number;
+}
+
+export interface VoiceProfile {
+  sampleRate: number;
+  noiseFloorDb: number;
+  speech: LevelStats;
+  speechSeconds: number;
+  loud: LevelStats | null;
+  pitchLowHz: number | null;
+  pitchMedianHz: number | null;
+  sibilance: Sibilance | null;
+  spectrum: SpectrumBand[];
+  clipped: boolean;
+}
+
+export interface CalibrationNote {
+  stage: string;
+  text: string;
+}
+
+export interface CalibrationResult {
+  profile: VoiceProfile;
+  values: ParamDocument;
+  notes: CalibrationNote[];
+}
+
 export interface EngineApi {
   listDevices(): Promise<AudioDevices>;
   start(inputId: string, outputId: string): Promise<EngineState>;
@@ -128,6 +181,11 @@ export interface EngineApi {
   importPreset(): Promise<PresetSummary | null>;
   exportPreset(name: string, values: ParamDocument): Promise<string | null>;
   openPresetsFolder(): Promise<void>;
+  beginTake(): Promise<void>;
+  endTake(role: TakeRole): Promise<TakeSummary>;
+  listTakes(): Promise<TakeSummary[]>;
+  discardTakes(): Promise<void>;
+  analyzeTakes(tone: Tone): Promise<CalibrationResult>;
   onState(handler: (state: EngineState) => void): Promise<Unsubscribe>;
   onMeters(handler: (frame: MeterFrame) => void): Promise<Unsubscribe>;
 }
@@ -155,6 +213,11 @@ export function createEngineApi(call: Call, subscribe: Subscribe): EngineApi {
     importPreset: () => call<PresetSummary | null>("import_preset"),
     exportPreset: (name, values) => call<string | null>("export_preset", { name, values }),
     openPresetsFolder: () => call<void>("open_presets_folder"),
+    beginTake: () => call<void>("begin_take"),
+    endTake: (role) => call<TakeSummary>("end_take", { role }),
+    listTakes: () => call<TakeSummary[]>("list_takes"),
+    discardTakes: () => call<void>("discard_takes"),
+    analyzeTakes: (tone) => call<CalibrationResult>("analyze_takes", { tone }),
     onState: (handler) => subscribe<EngineState>("engine:state", handler),
     onMeters: (handler) => subscribe<MeterFrame>("engine:meters", handler),
   };

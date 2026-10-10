@@ -6,7 +6,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 use wonkixer_dsp::Params;
+use wonkixer_dsp::analysis::Take;
 
+use super::capture::Sink;
 use super::devices;
 use super::meters::MeterStore;
 use super::streams::{self, Streams};
@@ -14,9 +16,12 @@ use super::streams::{self, Streams};
 const METER_INTERVAL: Duration = Duration::from_millis(33);
 const STATE_EVENT: &str = "engine:state";
 const METERS_EVENT: &str = "engine:meters";
+const ENGINE_STOPPED: &str = "Start the engine before recording a take.";
 
 pub type StartReply = oneshot::Sender<Result<EngineState, String>>;
 pub type StateReply = oneshot::Sender<EngineState>;
+pub type CaptureReply = oneshot::Sender<Result<(), String>>;
+pub type TakeReply = oneshot::Sender<Result<Take, String>>;
 
 pub enum Command {
     Start {
@@ -29,6 +34,13 @@ pub enum Command {
     },
     State {
         reply: StateReply,
+    },
+    BeginCapture {
+        limit_seconds: u32,
+        reply: CaptureReply,
+    },
+    EndCapture {
+        reply: TakeReply,
     },
     StreamFailed {
         generation: u64,
@@ -77,6 +89,15 @@ pub fn run(
             Ok(Command::State { reply }) => {
                 reply.send(worker.state.clone()).ok();
             }
+            Ok(Command::BeginCapture {
+                limit_seconds,
+                reply,
+            }) => {
+                reply.send(worker.begin_capture(limit_seconds)).ok();
+            }
+            Ok(Command::EndCapture { reply }) => {
+                reply.send(worker.end_capture()).ok();
+            }
             Ok(Command::StreamFailed {
                 generation,
                 message,
@@ -84,6 +105,7 @@ pub fn run(
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
+        worker.drain_capture();
         worker.publish_meters();
     }
 }
@@ -92,6 +114,7 @@ struct Live {
     _streams: Streams,
     sample_rate: u32,
     generation: u64,
+    capture: Sink,
 }
 
 struct Worker {
@@ -152,7 +175,7 @@ impl Worker {
         let generation = self.generation;
         let failures = self.failures.clone();
         self.meters.reset();
-        let (streams, sample_rate) = streams::open(
+        let opened = streams::open(
             &input,
             &output,
             Arc::clone(&self.meters),
@@ -167,10 +190,12 @@ impl Worker {
             },
         )?;
 
+        let sample_rate = opened.sample_rate;
         self.live = Some(Live {
-            _streams: streams,
+            _streams: opened.streams,
             sample_rate,
             generation,
+            capture: opened.capture,
         });
         Ok(EngineState {
             running: true,
@@ -197,6 +222,24 @@ impl Worker {
             error: Some(message),
             ..EngineState::default()
         });
+    }
+
+    fn begin_capture(&mut self, limit_seconds: u32) -> Result<(), String> {
+        self.live_mut()?.capture.begin(limit_seconds)
+    }
+
+    fn end_capture(&mut self) -> Result<Take, String> {
+        self.live_mut()?.capture.end()
+    }
+
+    fn drain_capture(&mut self) {
+        if let Some(live) = &mut self.live {
+            live.capture.drain();
+        }
+    }
+
+    fn live_mut(&mut self) -> Result<&mut Live, String> {
+        self.live.as_mut().ok_or_else(|| ENGINE_STOPPED.to_owned())
     }
 
     fn transition(&mut self, state: EngineState) {

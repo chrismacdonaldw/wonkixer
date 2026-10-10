@@ -1,3 +1,4 @@
+mod capture;
 pub mod devices;
 mod meters;
 mod processor;
@@ -11,6 +12,7 @@ use std::thread::{self, JoinHandle};
 
 use tauri::AppHandle;
 use tokio::sync::oneshot;
+use wonkixer_dsp::analysis::Take;
 use wonkixer_dsp::{ParamValues, Params};
 
 use worker::Command;
@@ -65,6 +67,21 @@ impl Engine {
         let (reply, response) = oneshot::channel();
         self.send(Command::State { reply })?;
         response.await.map_err(|_| ENGINE_UNAVAILABLE.to_owned())
+    }
+
+    pub async fn begin_capture(&self, limit_seconds: u32) -> Result<(), String> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::BeginCapture {
+            limit_seconds,
+            reply,
+        })?;
+        response.await.map_err(|_| ENGINE_UNAVAILABLE.to_owned())?
+    }
+
+    pub async fn end_capture(&self) -> Result<Take, String> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::EndCapture { reply })?;
+        response.await.map_err(|_| ENGINE_UNAVAILABLE.to_owned())?
     }
 
     pub fn shutdown(&self) {

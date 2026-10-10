@@ -6,6 +6,7 @@ use ringbuf::HeapProd;
 use ringbuf::traits::Producer;
 use wonkixer_dsp::Params;
 
+use super::capture::{self, Sink, Tap};
 use super::meters::MeterStore;
 use super::processor::Processor;
 use super::transport::{self, Outlet, Pull};
@@ -15,13 +16,19 @@ pub struct Streams {
     _output: cpal::Stream,
 }
 
+pub struct Opened {
+    pub streams: Streams,
+    pub sample_rate: u32,
+    pub capture: Sink,
+}
+
 pub fn open(
     input: &cpal::Device,
     output: &cpal::Device,
     meters: Arc<MeterStore>,
     params: Arc<Params>,
     on_failure: impl Fn(String) + Clone + Send + 'static,
-) -> Result<(Streams, u32), String> {
+) -> Result<Opened, String> {
     let input_config = negotiated(input.default_input_config(), "input")?;
     let output_config = negotiated(output.default_output_config(), "output")?;
     if input_config.sample_rate() != output_config.sample_rate() {
@@ -33,6 +40,7 @@ pub fn open(
     }
     let sample_rate = input_config.sample_rate();
     let (producer, consumer) = transport::ring(sample_rate);
+    let (tap, capture) = capture::tap(sample_rate);
     let processor = Processor::new(params, sample_rate);
     meters.set_processing_latency(processor.latency_samples());
 
@@ -53,6 +61,7 @@ pub fn open(
                 output_config.channels(),
                 sample_rate,
                 Arc::clone(&meters),
+                tap,
             ),
             error_callback(meters, on_failure),
             None,
@@ -66,13 +75,14 @@ pub fn open(
         .play()
         .map_err(|error| format!("Could not start the output device: {error}"))?;
 
-    Ok((
-        Streams {
+    Ok(Opened {
+        streams: Streams {
             _input: input_stream,
             _output: output_stream,
         },
         sample_rate,
-    ))
+        capture,
+    })
 }
 
 fn negotiated(
@@ -149,6 +159,7 @@ fn output_callback(
     channels: u16,
     sample_rate: u32,
     meters: Arc<MeterStore>,
+    mut tap: Tap,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     let channels = usize::from(channels);
     let mut mono = vec![0.0f32; sample_rate as usize];
@@ -165,6 +176,7 @@ fn output_callback(
             if outlet.pull(block) == Pull::Underrun {
                 meters.record_dropout();
             }
+            tap.record(block);
             meters.record_report(processor.process(block));
             meters.set_processing_latency(processor.latency_samples());
             let mut peak = 0.0f32;
@@ -235,9 +247,9 @@ mod tests {
         let params = Arc::new(Params::new(&ParamValues::default()));
         let (failures, on_failure) = failure_log();
 
-        let (_streams, sample_rate) =
-            open(&input, &output, Arc::clone(&meters), params, on_failure)
-                .expect("streams to open");
+        let opened = open(&input, &output, Arc::clone(&meters), params, on_failure)
+            .expect("streams to open");
+        let sample_rate = opened.sample_rate;
         std::thread::sleep(Duration::from_secs(3));
         let frame = meters.snapshot(sample_rate);
 
