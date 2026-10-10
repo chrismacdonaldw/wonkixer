@@ -1,6 +1,9 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
 
+pub const CABLE_INPUT: &str = "CABLE Input";
+pub const CABLE_OUTPUT: &str = "CABLE Output";
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioDevice {
@@ -16,6 +19,30 @@ pub struct AudioDevice {
 pub struct AudioDevices {
     pub inputs: Vec<AudioDevice>,
     pub outputs: Vec<AudioDevice>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupStatus {
+    pub cable_installed: bool,
+    pub cable_input_id: Option<String>,
+    pub cable_output_id: Option<String>,
+    pub inputs: usize,
+    pub outputs: usize,
+}
+
+impl SetupStatus {
+    pub fn detect(devices: &AudioDevices) -> Self {
+        let cable_input_id = first_named(&devices.outputs, CABLE_INPUT);
+        let cable_output_id = first_named(&devices.inputs, CABLE_OUTPUT);
+        Self {
+            cable_installed: cable_input_id.is_some() && cable_output_id.is_some(),
+            cable_input_id,
+            cable_output_id,
+            inputs: devices.inputs.len(),
+            outputs: devices.outputs.len(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +94,13 @@ pub fn display_name(device: &cpal::Device) -> Result<String, String> {
         .map_err(|error| format!("Could not read the audio device details: {error}"))
 }
 
+fn first_named(devices: &[AudioDevice], prefix: &str) -> Option<String> {
+    devices
+        .iter()
+        .find(|device| device.name.starts_with(prefix))
+        .map(|device| device.id.clone())
+}
+
 fn describe_all<I>(
     devices: Result<I, cpal::Error>,
     default: Option<cpal::Device>,
@@ -106,5 +140,69 @@ fn default_config(
     match direction {
         Direction::Input => device.default_input_config(),
         Direction::Output => device.default_output_config(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(id: &str, name: &str) -> AudioDevice {
+        AudioDevice {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            is_default: false,
+            sample_rate: 48_000,
+            channels: 2,
+        }
+    }
+
+    #[test]
+    fn finds_both_cable_endpoints_by_name() {
+        let status = SetupStatus::detect(&AudioDevices {
+            inputs: vec![
+                device("mic", "Microphone (HyperX Cloud Alpha Wireless)"),
+                device("cable-out", "CABLE Output (VB-Audio Virtual Cable)"),
+            ],
+            outputs: vec![
+                device("phones", "Headphones (HyperX Cloud Alpha Wireless)"),
+                device("cable-in", "CABLE Input (VB-Audio Virtual Cable)"),
+            ],
+        });
+
+        assert_eq!(
+            status,
+            SetupStatus {
+                cable_installed: true,
+                cable_input_id: Some("cable-in".to_owned()),
+                cable_output_id: Some("cable-out".to_owned()),
+                inputs: 2,
+                outputs: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn a_missing_capture_endpoint_means_the_cable_is_not_installed() {
+        let status = SetupStatus::detect(&AudioDevices {
+            inputs: vec![device("mic", "Microphone (USB)")],
+            outputs: vec![device("cable-in", "CABLE Input (VB-Audio Virtual Cable)")],
+        });
+
+        assert!(!status.cable_installed);
+        assert_eq!(status.cable_input_id.as_deref(), Some("cable-in"));
+        assert_eq!(status.cable_output_id, None);
+    }
+
+    #[test]
+    fn the_endpoint_direction_matters() {
+        let status = SetupStatus::detect(&AudioDevices {
+            inputs: vec![device("wrong-way", "CABLE Input (VB-Audio Virtual Cable)")],
+            outputs: Vec::new(),
+        });
+
+        assert_eq!(status.cable_input_id, None);
+        assert_eq!(status.inputs, 1);
+        assert_eq!(status.outputs, 0);
     }
 }

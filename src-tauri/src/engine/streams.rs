@@ -223,10 +223,10 @@ mod tests {
     use cpal::traits::HostTrait;
     use wonkixer_dsp::ParamValues;
 
+    use super::super::devices;
     use super::*;
 
     const OPT_IN: &str = "WONKIXER_AUDIO_TESTS";
-    const CABLE_PREFIX: &str = "CABLE Input";
 
     fn failure_log() -> (
         Arc<Mutex<Vec<StreamFailure>>>,
@@ -306,8 +306,8 @@ mod tests {
             .output_devices()
             .expect("output devices")
             .find(|device| {
-                super::super::devices::display_name(device)
-                    .is_ok_and(|name| name.starts_with(CABLE_PREFIX))
+                devices::display_name(device)
+                    .is_ok_and(|name| name.starts_with(devices::CABLE_INPUT))
             })
             .or_else(|| host.default_output_device())
             .expect("an output device");

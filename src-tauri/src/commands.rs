@@ -8,7 +8,7 @@ use wonkixer_dsp::params::{self, Schema};
 use wonkixer_dsp::{ParamId, ParamValues, StageId, presets};
 
 use crate::calibration::{self, CalibrationResult, CalibrationSession, TakeSummary};
-use crate::engine::devices::{self, AudioDevices};
+use crate::engine::devices::{self, AudioDevices, SetupStatus};
 use crate::engine::{Engine, EngineState};
 use crate::preferences::{Preferences, PreferencesStore, PresetKind};
 use crate::presets::{PresetCatalog, PresetStore, PresetSummary};
@@ -17,6 +17,15 @@ const PRESET_FILTER: &str = "wonkixer preset";
 
 #[tauri::command]
 pub async fn list_audio_devices() -> Result<AudioDevices, String> {
+    enumerate_devices().await
+}
+
+#[tauri::command]
+pub async fn get_setup_status() -> Result<SetupStatus, String> {
+    Ok(SetupStatus::detect(&enumerate_devices().await?))
+}
+
+async fn enumerate_devices() -> Result<AudioDevices, String> {
     tauri::async_runtime::spawn_blocking(|| devices::enumerate(&cpal::default_host()))
         .await
         .map_err(|error| format!("Could not list audio devices: {error}"))?

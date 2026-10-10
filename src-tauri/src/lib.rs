@@ -31,6 +31,7 @@ pub fn run() {
             commands::stop_engine,
             commands::get_engine_state,
             commands::set_engine_supervision,
+            commands::get_setup_status,
             commands::get_schema,
             commands::get_params,
             commands::set_param,

@@ -13,6 +13,14 @@ export interface AudioDevices {
   outputs: AudioDevice[];
 }
 
+export interface SetupStatus {
+  cableInstalled: boolean;
+  cableInputId: string | null;
+  cableOutputId: string | null;
+  inputs: number;
+  outputs: number;
+}
+
 export interface Endpoint {
   id: string;
   name: string;
@@ -168,6 +176,7 @@ export interface EngineApi {
   stop(): Promise<EngineState>;
   state(): Promise<EngineState>;
   setSupervision(enabled: boolean): Promise<EngineState>;
+  setupStatus(): Promise<SetupStatus>;
   schema(): Promise<ChainSchema>;
   params(): Promise<ParamDocument>;
   setParam(id: string, value: number): Promise<void>;
@@ -208,6 +217,7 @@ export function createEngineApi(call: Call, subscribe: Subscribe): EngineApi {
     stop: () => call<EngineState>("stop_engine"),
     state: () => call<EngineState>("get_engine_state"),
     setSupervision: (enabled) => call<EngineState>("set_engine_supervision", { enabled }),
+    setupStatus: () => call<SetupStatus>("get_setup_status"),
     schema: () => call<ChainSchema>("get_schema"),
     params: () => call<ParamDocument>("get_params"),
     setParam: (id, value) => call<void>("set_param", { id, value }),
