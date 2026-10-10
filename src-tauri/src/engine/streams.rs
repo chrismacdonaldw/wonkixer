@@ -2,15 +2,13 @@ use std::sync::Arc;
 
 use assert_no_alloc::{assert_no_alloc, permit_alloc};
 use cpal::traits::{DeviceTrait, StreamTrait};
-use ringbuf::HeapProd;
-use ringbuf::traits::Producer;
 use wonkixer_dsp::Params;
 
 use super::capture::{self, Sink, Tap};
 use super::devices::Direction;
 use super::meters::MeterStore;
 use super::processor::Processor;
-use super::transport::{self, Outlet, Pull};
+use super::transport::{self, Inlet, Outlet, Pull};
 
 pub struct Streams {
     _input: cpal::Stream,
@@ -60,23 +58,18 @@ pub fn open(
 ) -> Result<Opened, String> {
     let input_config = negotiated(input.default_input_config(), "input")?;
     let output_config = negotiated(output.default_output_config(), "output")?;
-    if input_config.sample_rate() != output_config.sample_rate() {
-        return Err(format!(
-            "The input runs at {} Hz but the output runs at {} Hz. Set both devices to the same rate in Windows Sound settings.",
-            input_config.sample_rate(),
-            output_config.sample_rate()
-        ));
-    }
-    let sample_rate = input_config.sample_rate();
+    let sample_rate = output_config.sample_rate();
     let (producer, consumer) = transport::ring(sample_rate);
+    let inlet = Inlet::new(producer, input_config.sample_rate(), sample_rate)?;
     let (tap, capture) = capture::tap(sample_rate);
     let processor = Processor::new(params, sample_rate);
     meters.set_processing_latency(processor.latency_samples());
+    meters.set_conversion_latency(inlet.latency_frames());
 
     let input_stream = input
         .build_input_stream(
             input_config.config(),
-            input_callback(producer, input_config.channels(), Arc::clone(&meters)),
+            input_callback(inlet, input_config.channels(), Arc::clone(&meters)),
             error_callback(Direction::Input, Arc::clone(&meters), on_failure.clone()),
             None,
         )
@@ -163,7 +156,7 @@ fn error_callback(
 }
 
 fn input_callback(
-    mut producer: HeapProd<f32>,
+    mut inlet: Inlet,
     channels: u16,
     meters: Arc<MeterStore>,
 ) -> impl FnMut(&[f32], &cpal::InputCallbackInfo) + Send + 'static {
@@ -176,12 +169,12 @@ fn input_callback(
             for frame in data.chunks_exact(channels) {
                 let sample = frame.iter().sum::<f32>() * scale;
                 peak = peak.max(sample.abs());
-                overflowed |= producer.try_push(sample).is_err();
+                overflowed |= inlet.push(sample).is_err();
             }
             if overflowed {
                 meters.record_dropout();
             }
-            meters.record_input(peak, data.len() / channels);
+            meters.record_input(peak, inlet.chain_frames(data.len() / channels));
         })
     }
 }

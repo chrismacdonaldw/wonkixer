@@ -16,6 +16,7 @@ pub struct MeterStore {
     output_block: AtomicU32,
     ring_fill: AtomicU32,
     processing_latency: AtomicU32,
+    conversion_latency: AtomicU32,
     dropouts: AtomicU32,
     reduction: [AtomicU32; StageId::COUNT],
     detector: [AtomicU32; StageId::COUNT],
@@ -67,6 +68,11 @@ impl MeterStore {
             .store(clamp_u32(frames), Ordering::Relaxed);
     }
 
+    pub fn set_conversion_latency(&self, frames: usize) {
+        self.conversion_latency
+            .store(clamp_u32(frames), Ordering::Relaxed);
+    }
+
     pub fn reset(&self) {
         for cell in [
             &self.input_peak,
@@ -75,6 +81,7 @@ impl MeterStore {
             &self.output_block,
             &self.ring_fill,
             &self.processing_latency,
+            &self.conversion_latency,
             &self.dropouts,
         ] {
             cell.store(0, Ordering::Relaxed);
@@ -90,7 +97,8 @@ impl MeterStore {
         let buffered_frames = self.input_block.load(Ordering::Relaxed)
             + self.ring_fill.load(Ordering::Relaxed)
             + self.output_block.load(Ordering::Relaxed)
-            + self.processing_latency.load(Ordering::Relaxed);
+            + self.processing_latency.load(Ordering::Relaxed)
+            + self.conversion_latency.load(Ordering::Relaxed);
         MeterFrame {
             input_peak_db: to_db(input_peak),
             output_peak_db: to_db(output_peak),
@@ -157,6 +165,17 @@ mod tests {
         let frame = meters.snapshot(48_000);
 
         assert!((frame.latency_ms - 45.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn latency_includes_sample_rate_conversion_until_reset() {
+        let meters = MeterStore::default();
+        meters.record_input(0.0, 480);
+        meters.set_conversion_latency(96);
+        assert!((meters.snapshot(48_000).latency_ms - 12.0).abs() < 0.001);
+
+        meters.reset();
+        assert_eq!(meters.snapshot(48_000).latency_ms, 0.0);
     }
 
     #[test]

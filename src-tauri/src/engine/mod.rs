@@ -2,6 +2,7 @@ mod capture;
 pub mod devices;
 mod meters;
 mod processor;
+mod resampler;
 mod streams;
 mod supervisor;
 mod transport;

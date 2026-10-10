@@ -1,11 +1,57 @@
-use ringbuf::traits::{Consumer, Observer, Split};
+use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
+
+use super::resampler::RateConverter;
 
 const CAPACITY_SECONDS: u32 = 1;
 const MARGIN_MS: u32 = 2;
 
 pub fn ring(sample_rate: u32) -> (HeapProd<f32>, HeapCons<f32>) {
     HeapRb::<f32>::new((sample_rate * CAPACITY_SECONDS) as usize).split()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Overflow;
+
+pub struct Inlet {
+    producer: HeapProd<f32>,
+    converter: Option<RateConverter>,
+}
+
+impl Inlet {
+    pub fn new(producer: HeapProd<f32>, input_rate: u32, chain_rate: u32) -> Result<Self, String> {
+        let converter = (input_rate != chain_rate)
+            .then(|| RateConverter::new(input_rate, chain_rate))
+            .transpose()?;
+        Ok(Self {
+            producer,
+            converter,
+        })
+    }
+
+    pub fn latency_frames(&self) -> usize {
+        self.converter
+            .as_ref()
+            .map_or(0, RateConverter::latency_frames)
+    }
+
+    pub fn chain_frames(&self, input_frames: usize) -> usize {
+        self.converter.as_ref().map_or(input_frames, |converter| {
+            converter.output_frames(input_frames)
+        })
+    }
+
+    pub fn push(&mut self, sample: f32) -> Result<(), Overflow> {
+        let Some(converter) = &mut self.converter else {
+            return self.producer.try_push(sample).map_err(|_| Overflow);
+        };
+        match converter.push(sample) {
+            Some(converted) if self.producer.push_slice(converted) < converted.len() => {
+                Err(Overflow)
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +129,6 @@ impl Outlet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ringbuf::traits::Producer;
 
     const RATE: u32 = 48_000;
     const BLOCK: usize = 480;
@@ -146,6 +191,40 @@ mod tests {
         assert_eq!(outlet.pull(&mut block), Pull::Ready);
         assert_eq!(outlet.fill(), fill - BLOCK - 1);
         assert_eq!(block[0], 1.0);
+    }
+
+    #[test]
+    fn an_inlet_at_the_chain_rate_passes_samples_straight_through() {
+        let (producer, consumer) = ring(RATE);
+        let mut inlet = Inlet::new(producer, RATE, RATE).expect("inlet");
+        for index in 0..BLOCK {
+            inlet.push(index as f32).expect("room");
+        }
+        assert_eq!(inlet.latency_frames(), 0);
+        assert_eq!(inlet.chain_frames(BLOCK), BLOCK);
+        assert_eq!(consumer.occupied_len(), BLOCK);
+    }
+
+    #[test]
+    fn an_inlet_below_the_chain_rate_converts_into_the_ring() {
+        let (producer, consumer) = ring(RATE);
+        let mut inlet = Inlet::new(producer, 44_100, RATE).expect("inlet");
+        for _ in 0..44_100 {
+            inlet.push(0.0).expect("room");
+        }
+        assert!(inlet.latency_frames() > 0);
+        assert_eq!(inlet.chain_frames(441), 480);
+        assert!(consumer.occupied_len().abs_diff(RATE as usize) <= inlet.latency_frames());
+    }
+
+    #[test]
+    fn an_inlet_reports_overflow_when_the_ring_is_full() {
+        let (producer, _consumer) = ring(RATE);
+        let mut inlet = Inlet::new(producer, RATE, RATE).expect("inlet");
+        for _ in 0..RATE {
+            inlet.push(0.0).expect("room");
+        }
+        assert_eq!(inlet.push(0.0), Err(Overflow));
     }
 
     #[test]
