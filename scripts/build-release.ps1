@@ -149,17 +149,24 @@ try {
     }
     $remapFlag = "--remap-path-prefix=$HOME=~"
     $env:RUSTFLAGS = if ($saved.RUSTFLAGS) { "$($saved.RUSTFLAGS) $remapFlag" } else { $remapFlag }
-    try {
-        Invoke-Checked npm @("run", "tauri", "build")
-    } finally {
-        Restore-Environment $saved
-        $signingPassword = $null
-    }
 
     $releaseRoot = Join-Path $metadata.target_directory "release"
     $setupName = "$($config.productName)_${version}_x64-setup.exe"
     $setupPath = Join-Path $releaseRoot "bundle\nsis\$setupName"
     $signaturePath = "$setupPath.sig"
+    Remove-Item -LiteralPath $setupPath, $signaturePath -ErrorAction SilentlyContinue
+
+    $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
+    $releaseConfig = Join-Path ([IO.Path]::GetTempPath()) "wonkixer-release.conf.json"
+    [IO.File]::WriteAllText($releaseConfig, '{ "bundle": { "createUpdaterArtifacts": true } }', $utf8WithoutBom)
+    try {
+        Invoke-Checked npm @("run", "tauri", "build", "--", "--config", $releaseConfig)
+    } finally {
+        Restore-Environment $saved
+        $signingPassword = $null
+        Remove-Item -LiteralPath $releaseConfig -ErrorAction SilentlyContinue
+    }
+
     foreach ($path in @($setupPath, $signaturePath)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Expected release artifact not found: $path"
@@ -184,7 +191,6 @@ try {
             }
         }
     }
-    $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
     $latestPath = Join-Path $assetDirectory "latest.json"
     [IO.File]::WriteAllText($latestPath, ($latest | ConvertTo-Json -Depth 5), $utf8WithoutBom)
 

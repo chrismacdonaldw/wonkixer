@@ -53,9 +53,21 @@ Back up the private key securely. Never generate a replacement after a signed
 release has shipped: existing installations cannot trust updates signed by a
 different key.
 
-`createUpdaterArtifacts` is on, so a plain `npm run tauri build` without
-`TAURI_SIGNING_PRIVATE_KEY` builds the installer and then fails at the signing
-step. Use `npm run tauri dev` for day-to-day work.
+`bundle.createUpdaterArtifacts` is off in `tauri.conf.json`, so a plain
+`npm run tauri build` needs no key and produces an unsigned installer for local
+testing. The release script turns it on for its own build only by passing a
+config override to the CLI:
+
+```powershell
+'{ "bundle": { "createUpdaterArtifacts": true } }' | Set-Content -Encoding ascii "$env:TEMP\wonkixer-release.conf.json"
+npm run tauri build -- --config "$env:TEMP\wonkixer-release.conf.json"
+```
+
+The override goes through a file because Windows PowerShell 5.1 mangles the
+quotes of an inline JSON argument.
+
+With the override, the build fails at the signing step unless
+`TAURI_SIGNING_PRIVATE_KEY` is set.
 
 Updater signing does not Authenticode-sign the installer. Authenticode is a
 separate certificate-based process and is not configured, so Windows
@@ -69,7 +81,8 @@ SmartScreen warns about the installer on first run.
 
 The script checks the tree is clean, the versions agree and the signing key
 matches the pinned public key, then runs `npm ci`, `npm run check` and
-`npm run tauri build` with home-directory paths remapped out of the binary.
+`npm run tauri build` with updater artifacts enabled and home-directory paths
+remapped out of the binary.
 The upload set is written to `target/release/release-assets/` at the
 repository root (the Cargo workspace target, not `src-tauri/target`):
 

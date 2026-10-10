@@ -29,7 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "publisher": "chrismacdonaldw",
     "copyright": "Copyright (c) 2026 chrismacdonaldw",
     "homepage": "https://github.com/chrismacdonaldw/wonkixer",
