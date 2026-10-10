@@ -87,6 +87,12 @@ pub fn is_connected(host: &cpal::Host, id: &str) -> bool {
     find(host, id).is_ok()
 }
 
+pub fn default_output(host: &cpal::Host) -> Option<(cpal::Device, String)> {
+    let device = host.default_output_device()?;
+    let id = device.id().ok()?.to_string();
+    Some((device, id))
+}
+
 pub fn display_name(device: &cpal::Device) -> Result<String, String> {
     device
         .description()

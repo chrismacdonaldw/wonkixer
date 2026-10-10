@@ -7,6 +7,8 @@ use wonkixer_dsp::analysis::{
     self, Calibration, Captures, Note, Take, TakeRole, Tone, VoiceProfile,
 };
 
+use crate::engine::Clip;
+
 pub const MAX_TAKE_SECONDS: u32 = 60;
 
 #[derive(Default)]
@@ -51,6 +53,13 @@ impl CalibrationSession {
 
     pub fn takes(&self) -> BTreeMap<TakeRole, Take> {
         self.lock().clone()
+    }
+
+    pub fn clip(&self, role: TakeRole) -> Option<Clip> {
+        self.lock()
+            .get(&role)
+            .filter(|take| !take.samples.is_empty())
+            .map(|take| Clip::new(&take.samples, take.sample_rate))
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<TakeRole, Take>> {
@@ -122,6 +131,19 @@ mod tests {
         assert!(summaries[0].clipped);
         session.discard();
         assert!(session.summaries().is_empty());
+    }
+
+    #[test]
+    fn only_a_recorded_take_can_be_auditioned() {
+        let session = CalibrationSession::default();
+        assert!(session.clip(TakeRole::Speech).is_none());
+
+        session.store(TakeRole::Speech, take(0.0, 0.1));
+        assert!(session.clip(TakeRole::Speech).is_none());
+
+        session.store(TakeRole::Speech, take(1.0, 0.1));
+        assert!(session.clip(TakeRole::Speech).is_some());
+        assert!(session.clip(TakeRole::Loud).is_none());
     }
 
     #[test]

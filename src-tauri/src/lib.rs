@@ -72,6 +72,8 @@ pub fn run() {
             commands::list_takes,
             commands::discard_takes,
             commands::analyze_takes,
+            commands::start_audition,
+            commands::stop_audition,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build wonkixer")

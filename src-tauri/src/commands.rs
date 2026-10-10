@@ -9,7 +9,7 @@ use wonkixer_dsp::{ParamId, ParamValues, StageId, presets};
 
 use crate::calibration::{self, CalibrationResult, CalibrationSession, TakeSummary};
 use crate::engine::devices::{self, AudioDevices, SetupStatus};
-use crate::engine::{Engine, EngineState};
+use crate::engine::{AuditionRequest, Engine, EngineState};
 use crate::login;
 use crate::preferences::{Preferences, PreferencesStore, PresetKind};
 use crate::presets::{PresetCatalog, PresetStore, PresetSummary};
@@ -239,6 +239,28 @@ pub async fn end_take(
 ) -> Result<TakeSummary, String> {
     let take = engine.end_capture().await?;
     Ok(session.store(role, take))
+}
+
+#[tauri::command]
+pub async fn start_audition(
+    role: TakeRole,
+    output_id: Option<String>,
+    engine: State<'_, Engine>,
+    session: State<'_, CalibrationSession>,
+) -> Result<EngineState, String> {
+    let clip = session.clip(role);
+    engine
+        .start_audition(AuditionRequest {
+            role,
+            clip,
+            output_id,
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn stop_audition(engine: State<'_, Engine>) -> Result<EngineState, String> {
+    engine.stop_audition().await
 }
 
 #[tauri::command]

@@ -6,6 +6,27 @@ const SINC_LEN: usize = 64;
 const FIXED_RATIO: f64 = 1.0;
 const MONO: usize = 1;
 
+pub fn convert(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>, String> {
+    let mut converter = RateConverter::new(from_rate, to_rate)?;
+    let delay = converter.resampler.output_delay();
+    let wanted = converter.output_frames(samples.len());
+    let flush =
+        (delay as f64 / converter.resampler.resample_ratio()).ceil() as usize + 2 * CHUNK_FRAMES;
+    let mut converted = Vec::with_capacity(delay + wanted + converter.converted.len());
+    for sample in samples
+        .iter()
+        .copied()
+        .chain(std::iter::repeat_n(0.0, flush))
+    {
+        if let Some(chunk) = converter.push(sample) {
+            converted.extend_from_slice(chunk);
+        }
+    }
+    converted.drain(..delay.min(converted.len()));
+    converted.truncate(wanted);
+    Ok(converted)
+}
+
 pub struct RateConverter {
     resampler: Async<f32>,
     chunk: Vec<f32>,
@@ -141,6 +162,25 @@ mod tests {
         let latency = converter.latency_frames();
         assert!(latency > CHUNK_FRAMES, "{latency}");
         assert!(latency < TARGET_RATE as usize * 3 / 1000, "{latency}");
+    }
+
+    #[test]
+    fn converts_a_whole_take_at_once_without_a_leading_delay() {
+        let converted =
+            super::convert(&tone(SOURCE_RATE, 1), SOURCE_RATE, TARGET_RATE).expect("convert");
+
+        assert_eq!(converted.len(), TARGET_RATE as usize);
+        let edge = TARGET_RATE as usize / 20;
+        let worst = converted[edge..converted.len() - edge]
+            .iter()
+            .enumerate()
+            .map(|(index, &sample)| {
+                let ideal =
+                    AMPLITUDE * (TAU * TONE_HZ * (index + edge) as f32 / TARGET_RATE as f32).sin();
+                (sample - ideal).abs()
+            })
+            .fold(0.0f32, f32::max);
+        assert!(worst < 0.02, "{worst}");
     }
 
     #[test]

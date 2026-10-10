@@ -1,3 +1,4 @@
+mod audition;
 mod capture;
 mod clock;
 pub mod devices;
@@ -20,9 +21,10 @@ use tokio::sync::oneshot;
 use wonkixer_dsp::analysis::Take;
 use wonkixer_dsp::{ParamValues, Params};
 
+pub use audition::Clip;
 use supervisor::Route;
 use worker::Command;
-pub use worker::{EngineState, STATE_EVENT};
+pub use worker::{AuditionRequest, EngineState, STATE_EVENT};
 
 const ENGINE_UNAVAILABLE: &str = "The audio engine is not running.";
 
@@ -96,6 +98,18 @@ impl Engine {
         let (reply, response) = oneshot::channel();
         self.send(Command::EndCapture { reply })?;
         response.await.map_err(|_| ENGINE_UNAVAILABLE.to_owned())?
+    }
+
+    pub async fn start_audition(&self, request: AuditionRequest) -> Result<EngineState, String> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::StartAudition { request, reply })?;
+        response.await.map_err(|_| ENGINE_UNAVAILABLE.to_owned())?
+    }
+
+    pub async fn stop_audition(&self) -> Result<EngineState, String> {
+        let (reply, response) = oneshot::channel();
+        self.send(Command::StopAudition { reply })?;
+        response.await.map_err(|_| ENGINE_UNAVAILABLE.to_owned())
     }
 
     pub fn shutdown(&self) {

@@ -119,13 +119,13 @@ pub fn open(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Fault {
+pub enum Fault {
     Glitch,
     Ignorable,
     Fatal(Cause),
 }
 
-fn fault(error: &cpal::Error) -> Fault {
+pub fn fault(error: &cpal::Error) -> Fault {
     match error.kind() {
         cpal::ErrorKind::Xrun => Fault::Glitch,
         cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied => Fault::Ignorable,
@@ -230,12 +230,15 @@ fn output_callback(
 
 #[cfg(test)]
 mod tests {
+    use std::f32::consts::TAU;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use cpal::traits::HostTrait;
     use wonkixer_dsp::ParamValues;
 
+    use super::super::audition::{self, Clip};
     use super::super::devices;
     use super::*;
 
@@ -245,6 +248,9 @@ mod tests {
     const SETTLE_SECONDS: u64 = 1;
     const LOW_LATENCY_BOUND_MS: f32 = 45.0;
     const SHARED_BOUND_MS: f32 = 80.0;
+    const AUDITION_FROM_SECOND: u64 = 3;
+    const AUDITION_SECONDS: u64 = 4;
+    const TAKE_RATE: u32 = 48_000;
 
     fn failure_log() -> (
         Arc<Mutex<Vec<StreamFailure>>>,
@@ -335,6 +341,31 @@ mod tests {
             .expect("an output device")
     }
 
+    fn test_playback(host: &cpal::Host) -> cpal::Device {
+        let usable = |device: &cpal::Device| {
+            devices::display_name(device).is_ok_and(|name| !name.starts_with(devices::CABLE_INPUT))
+        };
+        host.default_output_device()
+            .filter(usable)
+            .or_else(|| host.output_devices().ok()?.find(usable))
+            .expect("a playback device other than the cable")
+    }
+
+    fn quiet_take() -> Clip {
+        let samples: Vec<f32> = (0..2 * TAKE_RATE)
+            .map(|index| {
+                let time = index as f32 / TAKE_RATE as f32;
+                let gate = if ((time * 4.0) as u32).is_multiple_of(2) {
+                    0.05
+                } else {
+                    0.0
+                };
+                gate * (TAU * 330.0 * time).sin()
+            })
+            .collect();
+        Clip::new(&samples, TAKE_RATE)
+    }
+
     #[test]
     fn passes_audio_between_real_devices_without_dropouts() {
         if std::env::var_os(OPT_IN).is_none() {
@@ -348,21 +379,47 @@ mod tests {
         let host = cpal::default_host();
         let input = test_input(&host);
         let output = test_output(&host);
+        let playback = test_playback(&host);
         let meters = Arc::new(MeterStore::default());
         let params = Arc::new(Params::new(&ParamValues::default()));
         let (failures, on_failure) = failure_log();
+        let audition_lost = Arc::new(AtomicBool::new(false));
 
-        let opened = open(&input, &output, Arc::clone(&meters), params, on_failure)
-            .expect("streams to open");
+        let opened = open(
+            &input,
+            &output,
+            Arc::clone(&meters),
+            Arc::clone(&params),
+            on_failure,
+        )
+        .expect("streams to open");
         let sample_rate = opened.sample_rate;
         let low_latency = opened.streams.low_latency();
         let mut worst = 0.0f32;
+        let mut audition = None;
         for second in 1..=seconds {
+            if second == AUDITION_FROM_SECOND {
+                let lost = Arc::clone(&audition_lost);
+                audition = Some(
+                    audition::open(&playback, &quiet_take(), Arc::clone(&params), move || {
+                        lost.store(true, Ordering::Relaxed);
+                    })
+                    .expect("the audition to open"),
+                );
+            } else if second == AUDITION_FROM_SECOND + AUDITION_SECONDS {
+                audition = None;
+            }
             std::thread::sleep(Duration::from_secs(1));
             let frame = meters.snapshot(sample_rate);
             eprintln!(
-                "{second:>3} s: {:.1} ms, {} dropouts",
-                frame.latency_ms, frame.dropouts
+                "{second:>3} s: {:.1} ms, {} dropouts{}",
+                frame.latency_ms,
+                frame.dropouts,
+                if audition.is_some() {
+                    ", auditioning"
+                } else {
+                    ""
+                }
             );
             if second > SETTLE_SECONDS {
                 worst = worst.max(frame.latency_ms);
@@ -370,7 +427,8 @@ mod tests {
         }
         let frame = meters.snapshot(sample_rate);
         eprintln!(
-            "{} -> {} ({}): worst {worst:.1} ms after settling, {} dropouts in {seconds} s",
+            "{} -> {} ({}): worst {worst:.1} ms after settling, {} dropouts in {seconds} s, \
+             auditioned to {} for {AUDITION_SECONDS} s",
             devices::display_name(&input).unwrap_or_default(),
             devices::display_name(&output).unwrap_or_default(),
             if low_latency {
@@ -378,10 +436,12 @@ mod tests {
             } else {
                 "shared output"
             },
-            frame.dropouts
+            frame.dropouts,
+            devices::display_name(&playback).unwrap_or_default(),
         );
 
         assert!(failures.lock().expect("failure log").is_empty());
+        assert!(!audition_lost.load(Ordering::Relaxed));
         assert_eq!(frame.dropouts, 0);
         let bound = if low_latency {
             LOW_LATENCY_BOUND_MS

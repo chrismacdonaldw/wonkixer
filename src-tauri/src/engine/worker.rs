@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 use wonkixer_dsp::Params;
-use wonkixer_dsp::analysis::Take;
+use wonkixer_dsp::analysis::{Take, TakeRole};
 
+use super::audition::{self, Audition, Clip};
 use super::capture::Sink;
 use super::devices::{self, Direction};
 use super::meters::MeterStore;
@@ -18,6 +19,11 @@ pub const STATE_EVENT: &str = "engine:state";
 const METER_INTERVAL: Duration = Duration::from_millis(33);
 const METERS_EVENT: &str = "engine:meters";
 const ENGINE_STOPPED: &str = "Start the engine before recording a take.";
+const AUDITION_STOPPED: &str = "Start the engine before playing a take.";
+const PLAYBACK_MISSING: &str = "The playback device is not connected.";
+const NO_DEFAULT_PLAYBACK: &str = "Windows has no default playback device. Pick one to listen on.";
+const PLAYBACK_FEEDS_CALLS: &str =
+    "That device feeds your calls, so everyone would hear the loop. Pick your headphones.";
 
 pub type StartReply = oneshot::Sender<Result<EngineState, String>>;
 pub type StateReply = oneshot::Sender<EngineState>;
@@ -46,11 +52,27 @@ pub enum Command {
     EndCapture {
         reply: TakeReply,
     },
+    StartAudition {
+        request: AuditionRequest,
+        reply: StartReply,
+    },
+    StopAudition {
+        reply: StateReply,
+    },
     StreamFailed {
         generation: u64,
         failure: StreamFailure,
     },
+    AuditionFailed {
+        generation: u64,
+    },
     Shutdown,
+}
+
+pub struct AuditionRequest {
+    pub role: TakeRole,
+    pub clip: Option<Clip>,
+    pub output_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -62,6 +84,14 @@ pub struct EngineState {
     pub sample_rate: Option<u32>,
     pub error: Option<String>,
     pub waiting_for_devices: bool,
+    pub audition: Option<AuditionState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditionState {
+    pub role: TakeRole,
+    pub output: Endpoint,
 }
 
 impl EngineState {
@@ -112,10 +142,18 @@ pub fn run(
             Ok(Command::EndCapture { reply }) => {
                 reply.send(worker.end_capture()).ok();
             }
+            Ok(Command::StartAudition { request, reply }) => {
+                reply.send(worker.start_audition(request)).ok();
+            }
+            Ok(Command::StopAudition { reply }) => {
+                worker.stop_audition();
+                reply.send(worker.state.clone()).ok();
+            }
             Ok(Command::StreamFailed {
                 generation,
                 failure,
             }) => worker.fail(generation, failure),
+            Ok(Command::AuditionFailed { generation }) => worker.audition_failed(generation),
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => worker.recover(),
         }
@@ -131,6 +169,12 @@ struct Live {
     sample_rate: u32,
     generation: u64,
     capture: Sink,
+    audition: Option<Playback>,
+}
+
+struct Playback {
+    _audition: Audition,
+    generation: u64,
 }
 
 impl Live {
@@ -265,6 +309,7 @@ impl Worker {
             sample_rate: Some(opened.sample_rate),
             error: None,
             waiting_for_devices: false,
+            audition: None,
         };
         self.live = Some(Live {
             _streams: opened.streams,
@@ -273,6 +318,7 @@ impl Worker {
             sample_rate: opened.sample_rate,
             generation,
             capture: opened.capture,
+            audition: None,
         });
         Ok(state)
     }
@@ -302,6 +348,7 @@ impl Worker {
     }
 
     fn begin_capture(&mut self, limit_seconds: u32) -> Result<(), String> {
+        self.stop_audition();
         self.live_mut()?.capture.begin(limit_seconds)
     }
 
@@ -313,6 +360,86 @@ impl Worker {
         if let Some(live) = &mut self.live {
             live.capture.drain();
         }
+    }
+
+    fn start_audition(&mut self, request: AuditionRequest) -> Result<EngineState, String> {
+        let route_output = match &self.live {
+            Some(live) => live.output.id.clone(),
+            None => return Err(AUDITION_STOPPED.to_owned()),
+        };
+        let clip = request.clip.ok_or_else(|| {
+            format!(
+                "There is no {} take yet. Record one first.",
+                request.role.label()
+            )
+        })?;
+        let (device, output) = self.playback(request.output_id)?;
+        if feeds_calls(&output, &route_output) {
+            return Err(PLAYBACK_FEEDS_CALLS.to_owned());
+        }
+
+        self.set_playback(None);
+        self.generation += 1;
+        let generation = self.generation;
+        let failures = self.failures.clone();
+        let opened = audition::open(&device, &clip, Arc::clone(&self.params), move || {
+            failures.send(Command::AuditionFailed { generation }).ok();
+        });
+        match opened {
+            Ok(audition) => {
+                self.set_playback(Some(Playback {
+                    _audition: audition,
+                    generation,
+                }));
+                self.show_audition(Some(AuditionState {
+                    role: request.role,
+                    output,
+                }));
+                Ok(self.state.clone())
+            }
+            Err(message) => {
+                self.show_audition(None);
+                Err(message)
+            }
+        }
+    }
+
+    fn playback(&self, id: Option<String>) -> Result<(cpal::Device, Endpoint), String> {
+        let (device, id) = match id {
+            Some(id) => devices::find(&self.host, &id)
+                .map(|device| (device, id))
+                .map_err(|_| PLAYBACK_MISSING.to_owned())?,
+            None => {
+                devices::default_output(&self.host).ok_or_else(|| NO_DEFAULT_PLAYBACK.to_owned())?
+            }
+        };
+        let name = devices::display_name(&device)?;
+        Ok((device, Endpoint { id, name }))
+    }
+
+    fn stop_audition(&mut self) {
+        self.set_playback(None);
+        self.show_audition(None);
+    }
+
+    fn set_playback(&mut self, playback: Option<Playback>) {
+        if let Some(live) = &mut self.live {
+            live.audition = playback;
+        }
+    }
+
+    fn audition_failed(&mut self, generation: u64) {
+        let current = self.live.as_ref().and_then(|live| live.audition.as_ref());
+        if current.is_some_and(|playback| playback.generation == generation) {
+            self.stop_audition();
+        }
+    }
+
+    fn show_audition(&mut self, audition: Option<AuditionState>) {
+        self.transition(EngineState {
+            audition,
+            ..self.state.clone()
+        });
     }
 
     fn live_mut(&mut self) -> Result<&mut Live, String> {
@@ -336,5 +463,55 @@ impl Worker {
                 .emit(METERS_EVENT, self.meters.snapshot(live.sample_rate))
                 .ok();
         }
+    }
+}
+
+fn feeds_calls(playback: &Endpoint, route_output: &str) -> bool {
+    playback.id == route_output || playback.name.starts_with(devices::CABLE_INPUT)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn endpoint(id: &str, name: &str) -> Endpoint {
+        Endpoint {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_loop_never_plays_into_the_route_or_the_cable() {
+        let cable = endpoint("cable", "CABLE Input (VB-Audio Virtual Cable)");
+        let speakers = endpoint("speakers", "Speakers (Realtek)");
+        let headphones = endpoint("phones", "Headphones (HyperX Cloud Alpha Wireless)");
+
+        assert!(feeds_calls(&cable, "speakers"));
+        assert!(feeds_calls(&speakers, "speakers"));
+        assert!(!feeds_calls(&headphones, "cable"));
+    }
+
+    #[test]
+    fn the_state_names_the_take_and_the_device_while_auditioning() {
+        let state = EngineState {
+            running: true,
+            audition: Some(AuditionState {
+                role: TakeRole::Speech,
+                output: endpoint("phones", "Headphones"),
+            }),
+            ..EngineState::default()
+        };
+
+        assert_eq!(
+            serde_json::to_value(&state).expect("json")["audition"],
+            json!({ "role": "speech", "output": { "id": "phones", "name": "Headphones" } })
+        );
+        assert_eq!(
+            serde_json::to_value(EngineState::default()).expect("json")["audition"],
+            serde_json::Value::Null
+        );
     }
 }
