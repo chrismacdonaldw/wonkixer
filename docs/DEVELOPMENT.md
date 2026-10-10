@@ -38,13 +38,40 @@ Frontend tests run with Node's test runner, `tsx` and a JSDOM built from the
 real `index.html`, importing TypeScript modules directly. Rust tests live next
 to the code they cover.
 
-One Rust test opens real audio devices (the default input and the first
-"CABLE Input" output, or the default output when no cable exists), runs for a
-few seconds and asserts there were no dropouts. It is skipped unless opted in:
+One Rust test opens real audio devices: the default input, or the first
+other input when the default is the cable's own "CABLE Output", and the first
+"CABLE Input" output, or the default output when no cable exists. It runs for
+at least 10 s, prints the measured latency every second, and asserts there
+were no dropouts and that the worst latency after the first second stayed
+under 45 ms on the low-latency output (80 ms on the fallback). It is skipped
+unless opted in; `WONKIXER_SOAK_SECONDS` lengthens the run:
 
 ```powershell
-$env:WONKIXER_AUDIO_TESTS = "1"; cargo test -p wonkixer passes_audio
+$env:WONKIXER_AUDIO_TESTS = "1"; cargo test -p wonkixer passes_audio -- --nocapture
+$env:WONKIXER_SOAK_SECONDS = "60"; cargo test -p wonkixer passes_audio -- --nocapture
 ```
+
+### Latency
+
+The footer's latency is measured from the Windows audio clock (see
+`latencyMs` in the [UI contract](UI-CONTRACT.md)). Where it comes from, with
+the HyperX headset into VB-Cable:
+
+- The microphone delivers 10 ms packets and cannot go shorter, so the
+  newest sample in hand can be up to 10 ms old.
+- The ring between the two devices holds one input packet, two output
+  periods and a 2 ms margin, about 17-18 ms counted from capture. It steers
+  on the age of its oldest frame rather than on how full it is, so it stays
+  safe whatever the phase between the two devices' clocks
+  (`engine/transport.rs`).
+- The output (`engine/wasapi.rs`) runs in 2.7 ms periods with a 280-frame
+  buffer; the cable reports consuming a block 5-13 ms after it is handed
+  over, depending on its phase when the route starts.
+- The limiter's lookahead adds 5 ms.
+
+A device without a low-latency shared mode, or one that does not mix in
+32-bit float, goes through cpal instead (`engine/output.rs`): 10 ms periods
+and a 1056-frame buffer, about 70 ms in total.
 
 Device recovery is checked by hand: start the engine, unplug the headset (or
 its wireless dongle), confirm the error names the lost device and the state

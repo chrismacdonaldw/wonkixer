@@ -136,10 +136,10 @@ asynchronous resampling driven by the fill level if it ever proves audible.
 | **Total** | **~40–55 before tuning, ~30–40 after** |
 
 cpal on WASAPI uses shared mode only; 10 ms is the floor per side without
-IAudioClient3 low-latency periods. Acceptable for the goal. If we later want
-under 20 ms total, the upgrade is talking to WASAPI directly via the `windows`
-crate with `IAudioClient3::InitializeSharedAudioStream` at the 2.67 ms period.
-Not planned for v1.
+IAudioClient3 low-latency periods. The output side now talks to WASAPI
+directly via the `windows` crate with `IAudioClient3::InitializeSharedAudioStream`
+at the 2.67 ms period; the microphone allows nothing below 10 ms. Measured
+numbers are in section 12, Latency.
 
 ---
 
@@ -649,8 +649,8 @@ Total: roughly 8–10 focused days to a shippable v1 (M0–M7, M9).
 | Risk | Mitigation |
 |---|---|
 | cpal `Stream` is `!Send`; can't live in Tauri state | Dedicated engine thread owns streams; everything else talks over a channel. Decided. |
-| Clock drift between USB mic and VB-Cable | Fill-level control in M1 with a creep test as acceptance criterion; `rubato` fallback. |
-| 10 ms shared-mode periods are the floor in cpal | Accepted; ~30–40 ms total meets the goal. Documented upgrade path via `IAudioClient3`. |
+| Clock drift between USB mic and VB-Cable | The ring is steered on the age of its oldest frame, read from capture timestamps, repeating or dropping one sample at a time; `rubato` fallback. |
+| 10 ms shared-mode periods are the floor in cpal | The output now opens through `IAudioClient3` at the device's smallest period (2.7 ms on VB-Cable), with cpal as the fallback. See Latency below. |
 | VB-Cable adds its own buffer | Tune its "Max latency" in the VB-Cable control panel; document the value that works. |
 | Allocation or lock on the audio thread sneaks in | `assert_no_alloc` in debug; code review rule: callbacks only touch `Chain`, ring, atomics. |
 | Denormals after silence | FTZ/DAZ on the output thread; test times a 2-minute silence. |
@@ -658,6 +658,30 @@ Total: roughly 8–10 focused days to a shippable v1 (M0–M7, M9).
 | Windows "enhancements" or NVIDIA Broadcast silently in the path | Setup card tells the user to pick the raw HyperX device and disable enhancements; status pill shows the exact input name. |
 | Parameter schema drift between Rust and TS | Generated `chain-schema.json` with a test that fails on mismatch. |
 | User can't hear what the chain does | Flat preset for A/B, per-stage bypass with crossfade, GR meters, optional monitor path in M7. |
+
+### Latency
+
+Measured 2026-10-10 with the HyperX Cloud Alpha Wireless microphone (F32
+mono 48 kHz) into CABLE Input (F32 stereo 48 kHz), default chain. The number
+is the footer's `latencyMs`: capture instant of a sample to the instant the
+cable reports playing it, from WASAPI stream timestamps, plus the chain's 5
+ms lookahead. It ends at the cable's render side, so the cable's own buffer
+and the reading app are extra.
+
+| Build | Footer showed | Measured | Dropouts |
+|---|---|---|---|
+| Before (ring primed to two 1056-frame blocks, cpal output) | 60-71 ms (an estimate) | 94-97 ms | 1 per start (a capture glitch before audio flowed), none after |
+| Ring steered to one packet plus one block, cpal output | 69 ms | 68-71 ms | 0 in 60 s |
+| Low-latency `IAudioClient3` output at 128 frames | 27-36 ms | 27-36 ms | 0 in 60 s, idle and with all 16 cores busy |
+
+What is left, roughly: 10 ms microphone packets (its driver allows no shorter
+shared-mode period); 7-8 ms of ring above that (two 2.7 ms output periods,
+because the cable's driver wakes on a millisecond timer and sometimes asks
+for two at once, plus a 2 ms margin); 5-13 ms from handing a block to the
+cable until it reports consuming it, settling at start into one of two
+phases; 5 ms limiter lookahead. Under 20 ms would need a microphone with
+shorter periods; on this hardware the floor is about 22 ms even with no
+margins.
 
 ---
 

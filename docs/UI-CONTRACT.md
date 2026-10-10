@@ -32,11 +32,33 @@ engine readouts from milestone 1 are in place and can be kept or redone.
 - Changing a parameter is instant and click-free; the engine smooths it. The
   UI can send a value on every drag event.
 - Meters arrive 30 times a second: input peak dBFS, output peak dBFS, a clip
-  flag, estimated latency in ms (including the chain's own lookahead, any
-  optional-stage delay and the resampler when one is running), dropout count,
-  and two maps keyed by stage for the
+  flag, `latencyMs`, `dropouts`, and two maps keyed by stage for the
   dynamics stages: `gainReduction` in dB and `detectorDb`, the level each
   stage's detector saw, for drawing live level against a threshold.
+- `latencyMs` is measured, not estimated: on every output block the engine
+  takes the instant the microphone captured the block's first sample and the
+  instant the output device says it will play it (both from the Windows
+  audio clock), and adds the chain's own delay: the limiter's 5 ms
+  lookahead, noise suppression's 10 ms while it is on, and about 2 ms for the
+  resampler when one is running. The value is the latest block's, so it
+  moves by a few tenths of a millisecond. For roughly the first 20 ms after a
+  start, before audio flows, it is a rough estimate from buffer sizes. It
+  stops where the output device takes the audio: VB-Cable's own buffer
+  between CABLE Input and CABLE Output, and whatever Discord or OBS add when
+  they read CABLE Output, are not included. With the HyperX headset into
+  VB-Cable it reads 27-36 ms (the cable settles into one of two phases when
+  the route starts); a device that has to use the fallback output below
+  reads about 70 ms.
+- `dropouts` counts audio lost after audio started flowing: the transfer
+  between the two devices running dry or overflowing, the microphone
+  reporting a gap, or the output device's buffer running dry. Glitches
+  reported while a route is starting are not counted. It resets when a route
+  starts.
+- The output opens in a low-latency mode, at the shortest shared-mode period
+  the device allows (2.7 ms on VB-Cable, 10 ms on most hardware), whenever
+  the device mixes in 32-bit float and offers that mode. Otherwise it falls
+  back to a standard 10 ms shared-mode stream. Nothing in the engine state
+  says which; only `latencyMs` shows the difference.
 - Engine state: running or not, the chosen input and output device names,
   sample rate, an error message when something failed, and
   `waitingForDevices`.
