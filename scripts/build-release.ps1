@@ -203,7 +203,8 @@ try {
     $notesFile = Join-Path ([IO.Path]::GetTempPath()) "wonkixer-$tag-notes.md"
     $releaseArguments = @("release", "create", $tag) + $assets + @("--repo", $Repository, "--verify-tag", "--title", "wonkixer $tag", "--notes-file", $notesFile)
     if (-not $Publish) {
-        Write-Host "Not published. With -Publish this runs: gh $($releaseArguments -join ' ')"
+        $display = ($releaseArguments | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
+        Write-Host "Not published. With -Publish this runs: gh $display"
         return
     }
     [IO.File]::WriteAllText($notesFile, $Notes, $utf8WithoutBom)
