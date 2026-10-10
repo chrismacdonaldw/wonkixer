@@ -1,23 +1,17 @@
-import { element } from "./dom.ts";
-import { STOPPED, type EngineApi, type EngineState, type MeterFrame } from "./engine.ts";
-import { formatCount, formatHz, formatMs } from "./format.ts";
+import { HISTORY_POINTS, LEVEL_FLOOR_DB, levelFraction } from "./curves.ts";
+import type { EngineApi, EngineState, MeterFrame } from "./engine.ts";
+import { createStore, type Store } from "./store.ts";
 
-export const METER_FLOOR_DB = -60;
-export const METER_CEILING_DB = 0;
-export const SCALE_TICKS_DB = [-60, -40, -20, -12, -6, 0];
+export { levelFraction };
+export const METER_FLOOR_DB = LEVEL_FLOOR_DB;
 
 const HOT_DB = -12;
 const CLIP_DB = -3;
 const HOLD_MS = 1000;
 const FALL_DB_PER_SECOND = 12;
-const HOLD_MARKER_PX = 2;
+const FRAMES_PER_SAMPLE = 3;
 
 export type Band = "signal" | "hot" | "clip";
-
-export function levelFraction(db: number): number {
-  const fraction = (db - METER_FLOOR_DB) / (METER_CEILING_DB - METER_FLOOR_DB);
-  return Math.min(1, Math.max(0, fraction));
-}
 
 export function bandFor(db: number): Band {
   if (db >= CLIP_DB) {
@@ -51,134 +45,124 @@ export class PeakHold {
   }
 }
 
-export interface MeterPalette {
-  track: string;
-  signal: string;
-  hot: string;
-  clip: string;
+export interface MeterHistory {
+  input: number[];
+  output: number[];
+  reduction: Record<string, number[]>;
 }
 
-export function paintMeter(
-  context: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  levelDb: number,
-  holdDb: number,
-  palette: MeterPalette,
-): void {
-  context.clearRect(0, 0, width, height);
-  context.fillStyle = palette.track;
-  context.fillRect(0, 0, width, height);
-
-  const level = levelFraction(levelDb) * width;
-  const segments: Array<[number, number, string]> = [
-    [0, levelFraction(HOT_DB), palette.signal],
-    [levelFraction(HOT_DB), levelFraction(CLIP_DB), palette.hot],
-    [levelFraction(CLIP_DB), 1, palette.clip],
-  ];
-  for (const [from, to, color] of segments) {
-    const start = from * width;
-    const end = Math.min(level, to * width);
-    if (end > start) {
-      context.fillStyle = color;
-      context.fillRect(start, 0, end - start, height);
-    }
-  }
-
-  if (holdDb > METER_FLOOR_DB) {
-    context.fillStyle = palette[bandFor(holdDb)];
-    const x = Math.min(width - HOLD_MARKER_PX, levelFraction(holdDb) * width);
-    context.fillRect(x, 0, HOLD_MARKER_PX, height);
-  }
+export interface MeterState {
+  live: boolean;
+  sampleRate: number | null;
+  inputPeakDb: number;
+  outputPeakDb: number;
+  inputHoldDb: number;
+  outputHoldDb: number;
+  clipLatched: boolean;
+  latencyMs: number;
+  dropouts: number;
+  gainReduction: Record<string, number>;
+  detectorDb: Record<string, number>;
+  history: MeterHistory;
 }
 
-interface MeterView {
-  canvas: HTMLCanvasElement;
-  context: CanvasRenderingContext2D;
-  hold: PeakHold;
+export const SILENT_METERS: MeterState = {
+  live: false,
+  sampleRate: null,
+  inputPeakDb: METER_FLOOR_DB,
+  outputPeakDb: METER_FLOOR_DB,
+  inputHoldDb: METER_FLOOR_DB,
+  outputHoldDb: METER_FLOOR_DB,
+  clipLatched: false,
+  latencyMs: 0,
+  dropouts: 0,
+  gainReduction: {},
+  detectorDb: {},
+  history: { input: [], output: [], reduction: {} },
+};
+
+export function pushHistory(values: number[], value: number): number[] {
+  const next = values.slice(-(HISTORY_POINTS - 1));
+  next.push(value);
+  return next;
 }
 
-export async function initMeters(
-  engine: EngineApi,
-  doc: Document = document,
-  now: () => number = () => performance.now(),
-): Promise<void> {
-  const palette = readPalette(doc);
-  const input = meterView(element<HTMLCanvasElement>("#meter-input", doc));
-  const output = meterView(element<HTMLCanvasElement>("#meter-output", doc));
-  const clipIndicator = element<HTMLButtonElement>("#clip-indicator", doc);
-  const rate = element<HTMLElement>("#readout-rate", doc);
-  const latency = element<HTMLElement>("#readout-latency", doc);
-  const dropouts = element<HTMLElement>("#readout-dropouts", doc);
+export interface MeterFeed {
+  store: Store<MeterState>;
+  clearClip(): void;
+  frame(frame: MeterFrame): void;
+  state(state: EngineState): void;
+}
 
-  renderScale(element<HTMLElement>("#meter-scale", doc), doc);
-  clipIndicator.addEventListener("click", () => clipIndicator.classList.remove("is-clipped"));
+export function createMeterFeed(now: () => number = () => performance.now()): MeterFeed {
+  const store = createStore<MeterState>(SILENT_METERS);
+  const inputHold = new PeakHold();
+  const outputHold = new PeakHold();
+  let pending = 0;
+  let inputMax = METER_FLOOR_DB;
+  let outputMax = METER_FLOOR_DB;
+  let reductionMax: Record<string, number> = {};
 
-  const paint = (view: MeterView, levelDb: number, timestamp: number): void => {
-    const holdDb = view.hold.update(levelDb, timestamp);
-    paintMeter(view.context, view.canvas.width, view.canvas.height, levelDb, holdDb, palette);
+  const resetSampling = (): void => {
+    pending = 0;
+    inputMax = METER_FLOOR_DB;
+    outputMax = METER_FLOOR_DB;
+    reductionMax = {};
   };
 
-  const renderFrame = (frame: MeterFrame): void => {
-    const timestamp = now();
-    paint(input, frame.inputPeakDb, timestamp);
-    paint(output, frame.outputPeakDb, timestamp);
-    latency.textContent = formatMs(frame.latencyMs);
-    dropouts.textContent = formatCount(frame.dropouts);
-    if (frame.clipped) {
-      clipIndicator.classList.add("is-clipped");
-    }
-  };
-
-  const renderState = (state: EngineState): void => {
-    rate.textContent = state.sampleRate === null ? "—" : formatHz(state.sampleRate);
-    if (!state.running) {
-      input.hold.reset();
-      output.hold.reset();
-      paint(input, METER_FLOOR_DB, now());
-      paint(output, METER_FLOOR_DB, now());
-      latency.textContent = "—";
-      dropouts.textContent = "—";
-    }
-  };
-
-  await engine.onMeters(renderFrame);
-  await engine.onState(renderState);
-  renderState(await engine.state().catch(() => STOPPED));
-}
-
-function meterView(canvas: HTMLCanvasElement): MeterView {
-  const scale = canvas.ownerDocument.defaultView?.devicePixelRatio ?? 1;
-  const bounds = canvas.getBoundingClientRect();
-  canvas.width = Math.max(1, Math.round(bounds.width * scale));
-  canvas.height = Math.max(1, Math.round(bounds.height * scale));
-  const context = canvas.getContext("2d");
-  if (!context) {
-    throw new Error("Canvas 2D context is unavailable");
-  }
-  return { canvas, context, hold: new PeakHold() };
-}
-
-function renderScale(scale: HTMLElement, doc: Document): void {
-  scale.replaceChildren(
-    ...SCALE_TICKS_DB.map((db) => {
-      const tick = doc.createElement("span");
-      const fraction = levelFraction(db);
-      tick.textContent = String(db);
-      tick.style.left = `${fraction * 100}%`;
-      tick.style.transform = `translateX(-${fraction * 100}%)`;
-      return tick;
-    }),
-  );
-}
-
-function readPalette(doc: Document): MeterPalette {
-  const styles = doc.defaultView?.getComputedStyle(doc.documentElement);
-  const token = (name: string, fallback: string): string => styles?.getPropertyValue(name).trim() || fallback;
   return {
-    track: token("--line-bright", "#2d2a26"),
-    signal: token("--signal", "#3fd3c1"),
-    hot: token("--hot", "#f0b23c"),
-    clip: token("--clip", "#ff4655"),
+    store,
+    clearClip: () => store.patch({ clipLatched: false }),
+    frame(frame) {
+      const timestamp = now();
+      const inputPeakDb = Math.max(METER_FLOOR_DB, frame.inputPeakDb);
+      const outputPeakDb = Math.max(METER_FLOOR_DB, frame.outputPeakDb);
+      inputMax = Math.max(inputMax, inputPeakDb);
+      outputMax = Math.max(outputMax, outputPeakDb);
+      for (const [stage, reduction] of Object.entries(frame.gainReduction)) {
+        reductionMax[stage] = Math.max(reductionMax[stage] ?? 0, reduction);
+      }
+      pending += 1;
+      store.set((state) => {
+        let history = state.history;
+        if (pending >= FRAMES_PER_SAMPLE) {
+          const reduction = { ...history.reduction };
+          for (const [stage, value] of Object.entries(reductionMax)) {
+            reduction[stage] = pushHistory(reduction[stage] ?? [], value);
+          }
+          history = { input: pushHistory(history.input, inputMax), output: pushHistory(history.output, outputMax), reduction };
+          resetSampling();
+        }
+        return {
+          ...state,
+          live: true,
+          inputPeakDb,
+          outputPeakDb,
+          inputHoldDb: inputHold.update(inputPeakDb, timestamp),
+          outputHoldDb: outputHold.update(outputPeakDb, timestamp),
+          clipLatched: state.clipLatched || frame.clipped,
+          latencyMs: frame.latencyMs,
+          dropouts: frame.dropouts,
+          gainReduction: frame.gainReduction,
+          detectorDb: frame.detectorDb,
+          history,
+        };
+      });
+    },
+    state(state) {
+      if (state.running) {
+        store.set((current) => ({ ...current, live: true, sampleRate: state.sampleRate }));
+        return;
+      }
+      inputHold.reset();
+      outputHold.reset();
+      resetSampling();
+      store.set((current) => ({ ...SILENT_METERS, clipLatched: current.clipLatched, sampleRate: null }));
+    },
   };
+}
+
+export async function connectMeters(engine: EngineApi, feed: MeterFeed): Promise<void> {
+  await engine.onMeters((frame) => feed.frame(frame));
+  await engine.onState((state) => feed.state(state));
 }

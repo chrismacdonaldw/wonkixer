@@ -1,7 +1,7 @@
 import { element, elements } from "./dom.ts";
 import { isResizeDirection, type WindowControls } from "./window-controls.ts";
 
-const INTERACTIVE_SELECTOR = "button, input, select, option, label, form, a, [role='button']";
+const INTERACTIVE_SELECTOR = "button, input, select, option, label, form, a, [role='button'], [role='dialog']";
 const MAXIMIZED_CLASS = "window-maximized";
 
 export type TitlebarPress = "drag" | "toggle-maximize" | "ignore";

@@ -26,30 +26,31 @@ export interface EngineState {
   error: string | null;
 }
 
-export interface GainReductionFrame {
-  expander: number;
-  deesser: number;
-  compressor: number;
-  limiter: number;
-}
-
 export interface MeterFrame {
   inputPeakDb: number;
   outputPeakDb: number;
   clipped: boolean;
   latencyMs: number;
   dropouts: number;
-  gainReduction: GainReductionFrame;
+  gainReduction: Record<string, number>;
+  detectorDb: Record<string, number>;
 }
 
 export type Unit = "decibels" | "hertz" | "milliseconds" | "ratio" | "q" | "switch";
 export type Scale = "linear" | "logarithmic";
+export type Family = "level" | "filter" | "cleanup" | "dynamics" | "sibilance" | "eq";
+export type Tier = "main" | "detail";
 
 export interface StageSpec {
   id: string;
   key: string;
   label: string;
+  title: string;
+  family: Family;
   bypassable: boolean;
+  optional: boolean;
+  latencyMs: number;
+  blurb: string;
 }
 
 export interface ParamSpec {
@@ -59,10 +60,12 @@ export interface ParamSpec {
   label: string;
   unit: Unit;
   scale: Scale;
+  tier: Tier;
   min: number;
   max: number;
   default: number;
   step: number;
+  coarse: number;
 }
 
 export interface ChainSchema {
@@ -70,9 +73,39 @@ export interface ChainSchema {
   params: ParamSpec[];
 }
 
-export interface ParamValues {
+export interface ParamDocument {
   values: Record<string, number>;
-  bypassed: string[];
+  bypassed: Record<string, boolean>;
+}
+
+export type PresetKind = "builtin" | "user";
+
+export interface PresetRef {
+  kind: PresetKind;
+  name: string;
+}
+
+export interface PresetSummary {
+  name: string;
+  modifiedMs: number;
+}
+
+export interface PresetCatalog {
+  builtin: string[];
+  user: PresetSummary[];
+}
+
+export interface DevicePreferences {
+  inputId: string | null;
+  outputId: string | null;
+}
+
+export interface Preferences {
+  version: number;
+  devices: DevicePreferences;
+  autoStart: boolean;
+  session: ParamDocument;
+  activePreset: PresetRef | null;
 }
 
 export interface EngineApi {
@@ -81,10 +114,20 @@ export interface EngineApi {
   stop(): Promise<EngineState>;
   state(): Promise<EngineState>;
   schema(): Promise<ChainSchema>;
-  params(): Promise<ParamValues>;
+  params(): Promise<ParamDocument>;
   setParam(id: string, value: number): Promise<void>;
   setBypass(stage: string, bypassed: boolean): Promise<void>;
-  replaceParams(values: ParamValues): Promise<ParamValues>;
+  replaceParams(values: ParamDocument): Promise<ParamDocument>;
+  preferences(): Promise<Preferences>;
+  savePreferences(preferences: Preferences): Promise<Preferences>;
+  listPresets(): Promise<PresetCatalog>;
+  loadPreset(ref: PresetRef): Promise<ParamDocument>;
+  saveUserPreset(name: string, values: ParamDocument): Promise<PresetSummary>;
+  renameUserPreset(from: string, to: string): Promise<PresetSummary>;
+  deleteUserPreset(name: string): Promise<void>;
+  importPreset(): Promise<PresetSummary | null>;
+  exportPreset(name: string, values: ParamDocument): Promise<string | null>;
+  openPresetsFolder(): Promise<void>;
   onState(handler: (state: EngineState) => void): Promise<Unsubscribe>;
   onMeters(handler: (frame: MeterFrame) => void): Promise<Unsubscribe>;
 }
@@ -98,10 +141,20 @@ export function createEngineApi(call: Call, subscribe: Subscribe): EngineApi {
     stop: () => call<EngineState>("stop_engine"),
     state: () => call<EngineState>("get_engine_state"),
     schema: () => call<ChainSchema>("get_schema"),
-    params: () => call<ParamValues>("get_params"),
+    params: () => call<ParamDocument>("get_params"),
     setParam: (id, value) => call<void>("set_param", { id, value }),
     setBypass: (stage, bypassed) => call<void>("set_bypass", { stage, bypassed }),
-    replaceParams: (values) => call<ParamValues>("set_params", { values }),
+    replaceParams: (values) => call<ParamDocument>("set_params", { values }),
+    preferences: () => call<Preferences>("get_preferences"),
+    savePreferences: (preferences) => call<Preferences>("save_preferences", { preferences }),
+    listPresets: () => call<PresetCatalog>("list_presets"),
+    loadPreset: (ref) => call<ParamDocument>("load_preset", { kind: ref.kind, name: ref.name }),
+    saveUserPreset: (name, values) => call<PresetSummary>("save_user_preset", { name, values }),
+    renameUserPreset: (from, to) => call<PresetSummary>("rename_user_preset", { from, to }),
+    deleteUserPreset: (name) => call<void>("delete_user_preset", { name }),
+    importPreset: () => call<PresetSummary | null>("import_preset"),
+    exportPreset: (name, values) => call<string | null>("export_preset", { name, values }),
+    openPresetsFolder: () => call<void>("open_presets_folder"),
     onState: (handler) => subscribe<EngineState>("engine:state", handler),
     onMeters: (handler) => subscribe<MeterFrame>("engine:meters", handler),
   };

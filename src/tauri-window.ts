@@ -13,3 +13,17 @@ export function createTauriWindowControls(): WindowControls {
     onResized: (handler) => current.onResized(handler),
   };
 }
+
+export async function onWindowClose(flush: () => Promise<void>): Promise<void> {
+  const current = getCurrentWindow();
+  let flushed = false;
+  await current.onCloseRequested(async (event) => {
+    if (flushed) {
+      return;
+    }
+    event.preventDefault();
+    await flush();
+    flushed = true;
+    await current.close();
+  });
+}

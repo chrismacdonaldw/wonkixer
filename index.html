@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0c0b09" />
+    <meta name="theme-color" content="#0b0c0e" />
     <title>wonkixer</title>
     <link rel="stylesheet" href="/src/styles.css" />
     <script type="module" src="/src/main.ts" defer></script>
@@ -21,11 +21,15 @@
           </svg>
         </span>
         <span class="app-name">WONKIXER</span>
-        <span id="engine-pill" class="engine-pill" data-state="stopped">
+        <span id="engine-pill" class="engine-pill" role="status" data-state="stopped">
           <span class="status-dot"></span>
           <span id="engine-pill-label">STOPPED</span>
         </span>
-        <span id="engine-route" class="engine-route"></span>
+        <button id="engine-route" class="route-button" type="button" aria-expanded="false" aria-haspopup="dialog">
+          <span id="engine-route-text" class="route-text"></span>
+          <svg class="chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4l2.5 2.5L7.5 4" /></svg>
+        </button>
+        <button id="engine-toggle" class="engine-toggle" type="button">START</button>
         <div class="window-controls">
           <button id="window-minimize" class="window-control" type="button" aria-label="Minimize">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.1" aria-hidden="true">
@@ -47,41 +51,123 @@
             </svg>
           </button>
         </div>
-      </header>
-      <aside class="rail">
-        <section class="rail-group">
-          <label class="rail-label" for="input-device">INPUT</label>
+        <div id="devices-popover" class="popover devices-popover" role="dialog" aria-label="Audio devices" hidden>
+          <label class="kicker" for="input-device">INPUT</label>
           <select id="input-device" class="device-select"></select>
-          <label class="rail-label" for="output-device">OUTPUT</label>
+          <label class="kicker device-label-gap" for="output-device">OUTPUT</label>
           <select id="output-device" class="device-select"></select>
-          <button id="engine-toggle" class="primary-button" type="button">START</button>
-          <p id="engine-error" class="rail-error" role="alert" hidden></p>
-        </section>
-        <section class="rail-group">
-          <h3>LEVELS</h3>
-          <div class="meter-row">
-            <span class="meter-label">IN</span>
-            <canvas id="meter-input" class="meter" aria-hidden="true"></canvas>
-            <span></span>
+          <p id="devices-hint" class="popover-hint"></p>
+          <p id="engine-error" class="engine-error" role="alert" hidden></p>
+        </div>
+      </header>
+      <div class="workspace">
+        <nav class="rail" aria-label="Signal chain">
+          <div class="preset-block">
+            <div class="preset-head">
+              <span class="kicker">PRESET</span>
+              <span id="preset-edited" class="edited-badge" hidden>EDITED</span>
+            </div>
+            <button id="preset-open" class="preset-button" type="button" aria-haspopup="dialog" aria-expanded="false">
+              <span id="preset-name" class="preset-button-name"></span>
+              <svg class="chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 4l2.5 2.5L7.5 4" /></svg>
+            </button>
+            <div class="preset-actions">
+              <button id="undo" class="icon-button" type="button" aria-label="Undo" disabled>
+                <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true"><path d="M4 6h5.5a3 3 0 0 1 0 6H7" /><path d="M6.5 3.5L4 6l2.5 2.5" /></svg>
+              </button>
+              <button id="redo" class="icon-button" type="button" aria-label="Redo" disabled>
+                <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true"><path d="M10 6H4.5a3 3 0 0 0 0 6H7" /><path d="M7.5 3.5L10 6 7.5 8.5" /></svg>
+              </button>
+              <button id="compare" class="chip" type="button" aria-pressed="false" disabled>COMPARE</button>
+              <span class="spacer"></span>
+              <button id="quick-save" class="chip" type="button">SAVE AS…</button>
+            </div>
           </div>
-          <div class="meter-row">
-            <span class="meter-label">OUT</span>
-            <canvas id="meter-output" class="meter" aria-hidden="true"></canvas>
-            <button id="clip-indicator" class="clip-indicator" type="button" aria-label="Clear clip indicator">CLIP</button>
+          <div class="chain-head-row">
+            <h2 class="kicker">SIGNAL CHAIN</h2>
+            <span id="chain-count" class="chain-count"></span>
+            <button id="hear-dry" class="chip chip-small" type="button" aria-pressed="false">HEAR DRY</button>
           </div>
-          <div id="meter-scale" class="meter-scale" aria-hidden="true"></div>
+          <div class="chain-wrap">
+            <div class="chain-spine" aria-hidden="true"></div>
+            <ol id="chain-list" class="chain-list"></ol>
+          </div>
+          <div class="chain-foot">
+            <button id="add-effect" class="add-effect" type="button" aria-current="false">
+              <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 1v8M1 5h8" /></svg>
+              ADD EFFECT
+            </button>
+          </div>
+        </nav>
+        <section class="page" aria-labelledby="page-title">
+          <header class="page-head">
+            <div class="page-heading">
+              <span id="page-kicker" class="kicker is-faint"></span>
+              <h1 id="page-title" class="page-title"></h1>
+              <p id="page-blurb" class="page-blurb"></p>
+            </div>
+            <div class="page-actions">
+              <span id="page-gr" class="page-gr" hidden></span>
+              <button id="page-reset" class="button-ghost" type="button">RESET</button>
+              <button id="page-bypass" class="button-ghost button-bypass" type="button" aria-pressed="false">BYPASS</button>
+              <button id="page-remove" class="button-ghost" type="button" hidden>REMOVE</button>
+            </div>
+          </header>
+          <div id="compare-banner" class="compare-banner" role="status" hidden>
+            <span class="kicker is-hot">COMPARING</span>
+            <span id="compare-text" class="compare-text"></span>
+            <button id="compare-back" class="button-hot" type="button">BACK TO MY EDITS</button>
+          </div>
+          <div id="page-body" class="page-body"></div>
         </section>
-        <section class="rail-group">
-          <h3>ENGINE</h3>
-          <dl class="readouts">
-            <div><dt>RATE</dt><dd id="readout-rate">&mdash;</dd></div>
-            <div><dt>LATENCY</dt><dd id="readout-latency">&mdash;</dd></div>
-            <div><dt>DROPOUTS</dt><dd id="readout-dropouts">&mdash;</dd></div>
-          </dl>
-        </section>
-      </aside>
-      <main class="chain"></main>
-      <footer class="footer"></footer>
+        <div id="presets-dialog" class="popover presets-dialog" role="dialog" aria-label="Presets" hidden>
+          <div class="presets-section-title">BUILT-IN</div>
+          <div id="presets-builtin" class="presets-list"></div>
+          <div class="presets-section-title presets-yours">YOURS<span id="presets-user-count" class="presets-user-count"></span></div>
+          <div id="presets-user" class="presets-list"></div>
+          <p id="presets-empty" class="presets-empty" hidden>Nothing saved yet. Tweak a preset, then save it as your own.</p>
+          <div class="presets-foot">
+            <div class="presets-buttons">
+              <button id="preset-save" class="button-primary" type="button" disabled>SAVE</button>
+              <button id="preset-save-as" class="button-ghost is-text" type="button">SAVE AS…</button>
+              <button id="preset-revert" class="button-ghost is-hot" type="button" hidden>REVERT</button>
+              <span class="spacer"></span>
+              <button id="preset-import" class="button-plain" type="button">IMPORT</button>
+              <button id="preset-export" class="button-plain" type="button">EXPORT</button>
+            </div>
+            <p id="presets-note" class="presets-note"></p>
+            <div class="presets-path">
+              <span class="presets-path-text">%APPDATA%\com.chrismacdonaldw.wonkixer\presets</span>
+              <button id="presets-folder" class="link-button" type="button">OPEN FOLDER</button>
+            </div>
+          </div>
+        </div>
+        <div id="keys-dialog" class="popover keys-dialog" role="dialog" aria-label="Control shortcuts" hidden>
+          <span class="kicker keys-title">EVERY VALUE BOX</span>
+          <div id="keys-list" class="keys-list"></div>
+        </div>
+      </div>
+      <footer class="footer">
+        <dl class="footer-readouts">
+          <div><dt>RATE</dt><dd id="readout-rate">&mdash;</dd></div>
+          <div><dt>LATENCY</dt><dd id="readout-latency">&mdash;</dd></div>
+          <div><dt>DROPOUTS</dt><dd id="readout-dropouts">&mdash;</dd></div>
+        </dl>
+        <button id="shortcuts" class="button-plain" type="button" aria-expanded="false">SHORTCUTS</button>
+      </footer>
+      <div id="name-dialog" class="modal" hidden>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+          <h2 id="dialog-title" class="modal-title">Save preset</h2>
+          <label class="kicker" for="preset-name-input">NAME</label>
+          <input id="preset-name-input" class="text-input" type="text" autocomplete="off" spellcheck="false" />
+          <p id="dialog-note" class="dialog-note"></p>
+          <span id="dialog-path" class="dialog-path"></span>
+          <div class="dialog-buttons">
+            <button id="dialog-cancel" class="button-ghost" type="button">CANCEL</button>
+            <button id="dialog-confirm" class="button-primary" type="button">SAVE</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="window-resize-handle" data-resize-direction="North"></div>
     <div class="window-resize-handle" data-resize-direction="NorthEast"></div>
